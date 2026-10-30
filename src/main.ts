@@ -40,6 +40,7 @@ const hud = new Hud(app, {
   onSound: (on) => sfx.setEnabled(on),
   onSoundDiag: () => toggleAudioDiag(),
   onHaptics: (on) => haptics.setEnabled(on),
+  onHapticsTest: () => haptics.test(),
   onHeroMove: (d) => heroKey(d),
 });
 hud.setLevels(LEVELS);
@@ -85,7 +86,8 @@ function toggleAudioDiag(show = !diagEl): void {
       `context  ${d.context}  ${d.sampleRate ? d.sampleRate + ' Hz' : ''}${d.createdRate && d.createdRate !== d.sampleRate ? ' (was ' + d.createdRate + ')' : ''}\n` +
       `silent <audio>  ${d.silentElement}\n` +
       `unlocks ${d.unlocks}  resumes ${d.resumes}  recreated ${d.recreated}\n` +
-      `last error  ${d.lastError || '-'}`;
+      `last error  ${d.lastError || '-'}\n` +
+      `haptics  ${haptics.backend}${haptics.isEnabled ? '' : ' (off)'}${haptics.backend === 'ios-switch' ? '  ticks ' + haptics.ticks : ''}`;
   };
   paint();
   diagTimer = window.setInterval(paint, 400);

@@ -25,8 +25,40 @@ const total = (p: number[]) => p.reduce((a, b) => a + b, 0);
 
 export type HapticName = 'pop' | 'thaw' | 'land' | 'win';
 
+/**
+ * Which haptics backend this browser has:
+ * - 'vibrate': the Vibration API (Android Chrome, …).
+ * - 'ios-switch': iOS Safari 17.4+ has no vibrate, but toggling an `<input type="checkbox" switch>`
+ *   (via its label) plays the system haptic tick. Ticks only; no texture.
+ * - 'none'.
+ */
+export type HapticBackend = 'vibrate' | 'ios-switch' | 'none';
+
+export function hapticsBackend(): HapticBackend {
+  if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') return 'vibrate';
+  try {
+    if (typeof document !== 'undefined' && 'switch' in document.createElement('input')) return 'ios-switch';
+  } catch {
+    /* ignore */
+  }
+  return 'none';
+}
+
+/** iOS tick patterns: number of ticks, 60 ms apart. */
+const IOS_TICKS: Record<HapticName, number> = { pop: 2, thaw: 3, land: 1, win: 4 };
+const IOS_TICK_GAP = 60;
+const IOS_MIN_INTERVAL = 50;
+
 export class Haptics {
+  readonly backend: HapticBackend;
   readonly supported: boolean;
+  // iOS switch backend
+  private switchLabel: HTMLLabelElement | null = null;
+  private switchInput: HTMLInputElement | null = null;
+  private lastTickAt = -1e9;
+  private tickTimers: number[] = [];
+  /** Ticks fired on the iOS backend (diagnostics / tests). */
+  ticks = 0;
   private enabled: boolean;
   private activated = false;
   private env = 0;
@@ -36,9 +68,10 @@ export class Haptics {
   private holdUntil = 0;
 
   constructor(enabled: boolean) {
-    this.supported = typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function';
+    this.backend = hapticsBackend();
+    this.supported = this.backend !== 'none';
     this.enabled = enabled;
-    if (this.supported && typeof document !== 'undefined') {
+    if (this.backend === 'vibrate' && typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', () => {
         if (document.hidden) this.stopTexture();
       });
@@ -66,11 +99,66 @@ export class Haptics {
   }
 
   private vibrate(p: number | number[]): void {
+    if (this.backend !== 'vibrate') return;
     try {
       navigator.vibrate(p);
     } catch {
       /* ignore */
     }
+  }
+
+  /** The hidden iOS switch (visually hidden, but rendered: not display:none). */
+  private ensureSwitch(): HTMLLabelElement | null {
+    if (this.switchLabel) return this.switchLabel;
+    if (typeof document === 'undefined' || !document.body) return null;
+    try {
+      const label = document.createElement('label');
+      label.setAttribute('aria-hidden', 'true');
+      label.style.cssText = 'position:fixed;left:-100px;top:0;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none;';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.setAttribute('switch', '');
+      input.tabIndex = -1;
+      input.setAttribute('aria-hidden', 'true');
+      label.append(input);
+      document.body.append(label);
+      this.switchLabel = label;
+      this.switchInput = input;
+    } catch {
+      return null;
+    }
+    return this.switchLabel;
+  }
+
+  /** One iOS haptic tick (rate-limited). Keeps keyboard focus where it was. */
+  private tick(): void {
+    const now = performance.now();
+    if (now - this.lastTickAt < IOS_MIN_INTERVAL) return;
+    const label = this.ensureSwitch();
+    if (!label) return;
+    this.lastTickAt = now;
+    try {
+      label.click();
+      this.ticks++;
+      if (document.activeElement === this.switchInput) this.switchInput?.blur();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  private iosPattern(n: number): void {
+    for (const t of this.tickTimers) window.clearTimeout(t);
+    this.tickTimers.length = 0;
+    this.tick(); // the first tick right away (inside the gesture when there is one)
+    for (let i = 1; i < n; i++) this.tickTimers.push(window.setTimeout(() => this.tick(), i * IOS_TICK_GAP));
+  }
+
+  /** Fire the pop pattern now (the "test" hold on the haptics button; also counts as activation). */
+  test(): void {
+    this.activated = true;
+    if (!this.supported || !this.enabled) return;
+    if (this.backend === 'ios-switch') this.iosPattern(IOS_TICKS.pop);
+    else this.vibrate(POP);
   }
 
   private stopTexture(force = false): void {
@@ -85,6 +173,17 @@ export class Haptics {
   /** One-shot pattern (pops in one frame: call once). */
   pulse(name: HapticName, fell = 1): void {
     if (!this.can() || document.hidden) return;
+    if (this.backend === 'ios-switch') {
+      if (name === 'land' && fell < 2) return; // a 1-cell drop is not worth a tick
+      if (name === 'win') {
+        // after the final pop's ticks
+        window.clearTimeout(this.winTimer);
+        this.winTimer = window.setTimeout(() => this.iosPattern(IOS_TICKS.win), IOS_TICKS.pop * IOS_TICK_GAP + 40);
+        return;
+      }
+      this.iosPattern(IOS_TICKS[name]);
+      return;
+    }
     const wait = this.holdUntil - performance.now();
     if (name === 'win' && wait > 0) {
       // The final pop and the win arrive together: let the pop finish, then play the win.
@@ -104,7 +203,7 @@ export class Haptics {
     const tau = target > this.env ? 0.15 : 0.3;
     this.env += (target - this.env) * (1 - Math.exp(-dt / tau));
     if (grainsPerStep > 0) this.lastFlowAt = now;
-    if (!this.can()) return;
+    if (!this.can() || this.backend !== 'vibrate') return; // iOS: ticks only, no texture
     const flowing = now - this.lastFlowAt < TEXTURE_GRACE && this.env > TEXTURE_MIN_ENV && !document.hidden;
     if (!flowing) {
       this.stopTexture();

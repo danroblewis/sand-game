@@ -2,6 +2,7 @@
 import type { Dir, LevelDef } from '../core/types';
 import { loadProgress, recordRandomSolve, saveProgress, type Progress, type RandomMode } from './progress';
 import { chapterRanges } from './chapters';
+import { hapticsBackend } from '../audio/haptics';
 
 export interface HudHandlers {
   onRestart: () => void;
@@ -24,6 +25,8 @@ export interface HudHandlers {
   onSoundDiag?: () => void;
   /** Vibration on/off toggled. */
   onHaptics?: (on: boolean) => void;
+  /** Haptics button held for 1 s and released: play the test pattern. */
+  onHapticsTest?: () => void;
 }
 
 export type WinKind = 'next' | 'last' | 'random';
@@ -191,14 +194,34 @@ export class Hud {
     });
     this.hapticsBtn = el('button', 'btn-sound btn-haptics');
     this.hapticsBtn.type = 'button';
+    // Hold 1 s and release: test pattern (fired on release, i.e. inside the gesture, for iOS).
+    let hDown = 0;
+    let hTested = false;
+    this.hapticsBtn.addEventListener('pointerdown', () => {
+      hDown = performance.now();
+      hTested = false;
+    });
+    this.hapticsBtn.addEventListener('pointerup', () => {
+      if (hDown && performance.now() - hDown >= 1000) {
+        hTested = true;
+        handlers.onHapticsTest?.();
+      }
+      hDown = 0;
+    });
+    this.hapticsBtn.addEventListener('pointercancel', () => (hDown = 0));
+    this.hapticsBtn.addEventListener('contextmenu', (e) => e.preventDefault());
     this.hapticsBtn.addEventListener('click', () => {
+      if (hTested) {
+        hTested = false;
+        return;
+      }
       this.progress.haptics = !this.progress.haptics;
       saveProgress(this.progress);
       this.renderSound();
       handlers.onHaptics?.(this.progress.haptics);
     });
-    // Only where the Vibration API exists (not iOS Safari).
-    const canVibrate = typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function';
+    // Only where some haptics backend exists (Vibration API, or the iOS 17.4+ switch tick).
+    const canVibrate = hapticsBackend() !== 'none';
     const right = el('div', 'hud-top-right');
     right.append(moves);
     if (canVibrate) right.append(this.hapticsBtn);
