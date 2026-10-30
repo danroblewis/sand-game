@@ -3,6 +3,7 @@ import type { Box, ColorId, Dir, GameEvent, GameState, SandRegion, ShapeName, Co
 import { SHADE_COUNT } from '../core/types';
 import { SHAPES } from '../core/shapes';
 import { regionVersion } from '../core/sand';
+import { CONVEYOR_INTERVAL, conveyorPlan } from '../core';
 import {
   BOARD_BG,
   GRID_LINE,
@@ -50,10 +51,12 @@ export interface View {
   dragBoxId: number | null;
   hoverBoxId: number | null;
   effects: Effect[];
+  /** Fraction (0..1) of the next sim step already elapsed (fixed-step accumulator / step length). */
+  stepFrac: number;
 }
 
 export function createView(): View {
-  return { selectedBoxId: null, dragBoxId: null, hoverBoxId: null, effects: [] };
+  return { selectedBoxId: null, dragBoxId: null, hoverBoxId: null, effects: [], stepFrac: 0 };
 }
 
 const POP_MS = 250;
@@ -68,9 +71,12 @@ const DEBRIS_SEEN_MS = 2500;
 const DIR_VEC: Record<Dir, [number, number]> = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
 /** Rotation that maps the local +x axis onto `dir`. */
 const DIR_ANGLE: Record<Dir, number> = { right: 0, down: Math.PI / 2, left: Math.PI, up: -Math.PI / 2 };
-/** Belt chevron crawl speed (cells per second) and spacing (cells). */
-const BELT_SPEED = 1;
+/** Belt chevron spacing (cells). They crawl exactly one cell per belt step, in sync with riders. */
 const BELT_SPACING = 0.5;
+/** Blocked riders nudge against their obstacle just before each belt step. */
+const NUDGE_CELLS = 0.045;
+const NUDGE_WINDOW = 0.2; // last fraction of the belt period
+const EMPTY_PLAN: Map<number, Dir> = new Map();
 /** A belt looks "busy" for this long after it moved a box. */
 const BELT_ACTIVE_MS = 300;
 
@@ -106,6 +112,17 @@ export function effectForEvent(ev: GameEvent, now: number): Effect | null {
     return { kind: 'thaw', t0: now, dur: THAW_MS, boxId: ev.boxId };
   }
   return null;
+}
+
+/** True if two pop effects' cells share an edge (absolute grid coordinates). */
+function popsTouch(a: Extract<Effect, { kind: 'pop' }>, b: Extract<Effect, { kind: 'pop' }>): boolean {
+  const set = new Set(a.cells.map((c) => `${a.x + c.x},${a.y + c.y}`));
+  for (const c of b.cells) {
+    const x = b.x + c.x;
+    const y = b.y + c.y;
+    if (set.has(`${x + 1},${y}`) || set.has(`${x - 1},${y}`) || set.has(`${x},${y + 1}`) || set.has(`${x},${y - 1}`)) return true;
+  }
+  return false;
 }
 
 // ---------- Shape outlines ----------
@@ -221,6 +238,8 @@ interface RenderPos {
   ry: number;
   /** Lerp time constant in seconds (longer while a conveyor carries the box). */
   tau: number;
+  /** True once a gliding rider is locked onto its exact belt position (drawn directly, no lerp). */
+  locked: boolean;
 }
 
 const LERP_TAU = 0.08; // seconds
@@ -244,6 +263,12 @@ export class Renderer {
   private lastState: GameState | null = null;
   /** Last time each conveyor moved a box (performance.now ms). */
   private beltActiveAt = new Map<number, number>();
+  /** Most recent pop effect (to merge a group's simultaneous pops into it). */
+  private lastPop: Extract<Effect, { kind: 'pop' }> | null = null;
+  /** Union outlines of the wall cells for the current state (rebuilt on state change). */
+  private wallLoops: Vec[][] = [];
+  /** Belt direction per grid cell "x,y" for the current state (rebuilt on state change). */
+  private beltCells = new Map<string, Dir>();
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -353,6 +378,9 @@ export class Renderer {
       this.lastState = state;
       this.positions.clear();
       this.beltActiveAt.clear();
+      this.beltCells.clear();
+      this.wallLoops = outlineLoops(state.walls ?? []);
+      for (const cv of state.conveyors ?? []) for (const c of cv.cells) this.beltCells.set(`${c.x},${c.y}`, cv.dir);
     }
     const dt = this.lastTime ? Math.min(0.1, (now - this.lastTime) / 1000) : 0;
     this.lastTime = now;
@@ -364,35 +392,81 @@ export class Renderer {
 
     this.drawBoard();
     for (const sb of state.sandBoxes) this.drawSandBox(sb.x, sb.y, sb.w, sb.h, sb.region);
-    for (const cv of state.conveyors ?? []) this.drawConveyor(cv, now);
+    // Belt timing: `phase` is set by the core when the step ran; add the elapsed part of the next
+    // step so riders (and chevrons) move every frame and reach exactly 1 cell at the belt step.
+    const convs = state.conveyors ?? [];
+    const frac = Math.min(1, Math.max(0, view.stepFrac || 0)) / CONVEYOR_INTERVAL;
+    const basePhase = convs.length && typeof convs[0].phase === 'number' ? convs[0].phase : (Math.max(0, state.tick - 1) % CONVEYOR_INTERVAL) / CONVEYOR_INTERVAL;
+    const phase = Math.min(1, basePhase + frac);
+    const beltProgress = Math.floor(Math.max(0, state.tick - 1) / CONVEYOR_INTERVAL) + phase; // in cells
+    const plan = convs.length ? conveyorPlan(state) : EMPTY_PLAN;
+    this.drawWalls();
+    for (const cv of convs) this.drawConveyor(cv, now, beltProgress);
 
     // Update animated positions.
+    const nudge =
+      phase > 1 - NUDGE_WINDOW ? NUDGE_CELLS * Math.sin((Math.PI * (phase - (1 - NUDGE_WINDOW))) / NUDGE_WINDOW) : 0;
     for (const b of state.boxes) {
       let p = this.positions.get(b.id);
       if (!p) {
-        p = { rx: b.x, ry: b.y, tau: LERP_TAU };
+        p = { rx: b.x, ry: b.y, tau: LERP_TAU, locked: false };
         this.positions.set(b.id, p);
+        continue;
+      }
+      const held = b.id === view.dragBoxId || b.id === state.heldBoxId;
+      if (held) p.tau = LERP_TAU;
+      let tx = b.x;
+      let ty = b.y;
+      const rideDir = held || b.frozen > 0 ? undefined : plan.get(b.id);
+      if (rideDir) {
+        // Gliding rider: grid position + belt phase. Continuous across the belt step because the
+        // grid position advances exactly when the phase wraps.
+        const [dx, dy] = DIR_VEC[rideDir];
+        tx += dx * phase;
+        ty += dy * phase;
+        if (p.locked) {
+          p.rx = tx;
+          p.ry = ty;
+          continue;
+        }
       } else {
-        // A box the player holds follows the finger quickly.
-        if (b.id === view.dragBoxId || b.id === state.heldBoxId) p.tau = LERP_TAU;
-        const k = dt > 0 ? 1 - Math.exp(-dt / p.tau) : 1;
-        p.rx += (b.x - p.rx) * k;
-        p.ry += (b.y - p.ry) * k;
-        if (Math.abs(b.x - p.rx) < 0.002) p.rx = b.x;
-        if (Math.abs(b.y - p.ry) < 0.002) p.ry = b.y;
-        if (p.rx === b.x && p.ry === b.y) p.tau = LERP_TAU;
+        p.locked = false;
+        // Blocked rider: a small nudge against the obstacle just before each belt step.
+        if (nudge > 0 && !held && b.frozen === 0 && b.state === 'active') {
+          let bd: Dir | undefined;
+          for (const c of b.cells) if ((bd = this.beltCells.get(`${b.x + c.x},${b.y + c.y}`))) break;
+          if (bd) {
+            tx += DIR_VEC[bd][0] * nudge;
+            ty += DIR_VEC[bd][1] * nudge;
+          }
+        }
+      }
+      const k = dt > 0 ? 1 - Math.exp(-dt / p.tau) : 1;
+      p.rx += (tx - p.rx) * k;
+      p.ry += (ty - p.ry) * k;
+      if (Math.abs(tx - p.rx) < 0.002) p.rx = tx;
+      if (Math.abs(ty - p.ry) < 0.002) p.ry = ty;
+      if (p.rx === tx && p.ry === ty) {
+        p.tau = LERP_TAU;
+        if (rideDir) p.locked = true; // eased onto the belt: from now on follow it exactly
       }
     }
 
-    // Draw resting boxes first, then the selected one, then the dragged one on top.
+    // Same-color touching boxes form a group (DESIGN 6b): drawn as one merged shape.
+    const groups = this.visualGroups(state, view);
+    const grouped = new Set<number>();
+    for (const g of groups) for (const b of g) grouped.add(b.id);
+
+    // Draw resting boxes first, then groups, then the selected one, then the dragged one on top.
     let selBox: Box | null = null;
     let dragBox: Box | null = null;
     for (const b of state.boxes) {
-      if (b.state !== 'active') continue;
+      if (b.state !== 'active' || grouped.has(b.id)) continue;
       if (b.id === view.dragBoxId) dragBox = b;
       else if (b.id === view.selectedBoxId) selBox = b;
       else this.drawBox(b, view, now);
     }
+    for (const g of groups) this.drawGroup(g, view, now);
     if (selBox) this.drawBox(selBox, view, now);
     if (dragBox) this.drawBox(dragBox, view, now);
 
@@ -436,6 +510,18 @@ export class Renderer {
       return out;
     }
     const fx = effectForEvent(ev, now);
+    if (fx && fx.kind === 'pop') {
+      // A group pops in one step (DESIGN 6b): fold touching same-color pops of this frame into one
+      // effect so they scale and fade as one shape instead of stacking flashes.
+      const prev = this.lastPop;
+      if (prev && prev.t0 === now && prev.color === fx.color && popsTouch(prev, fx)) {
+        const abs = fx.cells.map((c) => ({ x: fx.x + c.x - prev.x, y: fx.y + c.y - prev.y }));
+        prev.cells = prev.cells.concat(abs);
+        prev.sparks = prev.sparks.concat(fx.sparks.slice(0, Math.max(0, 40 - prev.sparks.length)));
+        return [];
+      }
+      this.lastPop = fx;
+    }
     return fx ? [fx] : [];
   }
 
@@ -443,7 +529,7 @@ export class Renderer {
    * Conveyor: a dark recessed lane over its cells, a roller at each end, and chevrons crawling in
    * `dir` (brighter for a moment after the belt moved a box).
    */
-  private drawConveyor(cv: ConveyorState, now: number): void {
+  private drawConveyor(cv: ConveyorState, now: number, progress: number): void {
     const cells = cv.cells && cv.cells.length ? cv.cells : [{ x: cv.x, y: cv.y }];
     const len = cells.length;
     const ctx = this.ctx;
@@ -480,7 +566,7 @@ export class Renderer {
 
     // Crawling chevrons (time based, ~1 cell/s).
     const spacing = BELT_SPACING * cs;
-    const phase = (((now / 1000) * BELT_SPEED * cs) % spacing + spacing) % spacing;
+    const phase = (((progress * cs) % spacing) + spacing) % spacing;
     const cw = cs * 0.13; // chevron depth along u
     const chH = half * 0.62;
     ctx.beginPath();
@@ -511,6 +597,59 @@ export class Renderer {
       ctx.fill(roundRectPath(u, -half - cs * 0.03, rw, half * 2 + cs * 0.06, rw * 0.45));
     }
     ctx.restore();
+  }
+
+  /**
+   * Walls: solid dark blocks merged across orthogonal neighbours (one outline per connected group,
+   * so no inner seams), with a faint hatch and an inner bevel (light top/left, dark bottom/right).
+   */
+  private drawWalls(): void {
+    if (this.wallLoops.length === 0) return;
+    const ctx = this.ctx;
+    const cs = this.cellSize;
+    const path = loopsPath(this.wallLoops, this.originX, this.originY, cs, cs * 0.03, cs * 0.12);
+    const g = ctx.createLinearGradient(0, this.originY, 0, this.originY + this.boardH * cs);
+    g.addColorStop(0, '#363c50');
+    g.addColorStop(1, '#2b3041');
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.45)';
+    ctx.shadowBlur = cs * 0.12;
+    ctx.shadowOffsetY = cs * 0.04;
+    ctx.fillStyle = g;
+    ctx.fill(path);
+    ctx.restore();
+
+    ctx.save();
+    ctx.clip(path);
+    // Faint diagonal hatch (board-aligned, so it flows across merged cells).
+    ctx.beginPath();
+    const step = cs * 0.22;
+    const x0 = this.originX;
+    const y0 = this.originY;
+    const W = this.boardW * cs;
+    const H = this.boardH * cs;
+    for (let d = -H; d < W; d += step) {
+      ctx.moveTo(x0 + d, y0 + H);
+      ctx.lineTo(x0 + d + H, y0);
+    }
+    ctx.strokeStyle = 'rgba(255,255,255,0.035)';
+    ctx.lineWidth = Math.max(1, cs * 0.02);
+    ctx.stroke();
+    // Inner bevel: the outline shifted down-right shows as a highlight on the top/left inner edges,
+    // shifted up-left as a shadow on the bottom/right inner edges.
+    const e = Math.max(1, cs * 0.045);
+    ctx.lineWidth = e * 2;
+    ctx.translate(e, e);
+    ctx.strokeStyle = 'rgba(255,255,255,0.16)';
+    ctx.stroke(path);
+    ctx.translate(-2 * e, -2 * e);
+    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
+    ctx.stroke(path);
+    ctx.restore();
+
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = Math.max(1, cs * 0.02);
+    ctx.stroke(path);
   }
 
   private drawBoard(): void {
@@ -734,29 +873,40 @@ export class Renderer {
       ctx.restore();
 
       if (selected || dragging) {
-        ctx.save();
-        ctx.shadowColor = boxGlow(b.color);
-        ctx.shadowBlur = cs * 0.35;
-        ctx.strokeStyle = boxGlow(b.color);
-        ctx.lineWidth = lw * 1.6;
-        ctx.stroke(path);
-        ctx.restore();
-        ctx.strokeStyle = 'rgba(255,255,255,0.85)';
-        ctx.lineWidth = Math.max(1, lw * 0.45);
-        ctx.stroke(path);
+        this.strokeSelected(b.color, path, lw);
       } else {
         ctx.strokeStyle = boxStroke(b.color);
         ctx.lineWidth = lw;
         ctx.stroke(path);
-        if (hover) {
-          ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-          ctx.lineWidth = Math.max(1, lw * 0.5);
-          ctx.stroke(path);
-        }
+        if (hover) this.strokeHover(path, lw);
       }
     }
 
-    // Thaw flash.
+    this.drawThaw(b, path, view, now, lw);
+  }
+
+  private strokeSelected(color: ColorId, path: Path2D, lw: number): void {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.shadowColor = boxGlow(color);
+    ctx.shadowBlur = this.cellSize * 0.35;
+    ctx.strokeStyle = boxGlow(color);
+    ctx.lineWidth = lw * 1.6;
+    ctx.stroke(path);
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+    ctx.lineWidth = Math.max(1, lw * 0.45);
+    ctx.stroke(path);
+  }
+
+  private strokeHover(path: Path2D, lw: number): void {
+    this.ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    this.ctx.lineWidth = Math.max(1, lw * 0.5);
+    this.ctx.stroke(path);
+  }
+
+  private drawThaw(b: Box, path: Path2D, view: View, now: number, lw: number): void {
+    const ctx = this.ctx;
     for (const e of view.effects) {
       if (e.kind !== 'thaw' || e.boxId !== b.id) continue;
       const t = (now - e.t0) / e.dur;
@@ -770,6 +920,140 @@ export class Renderer {
       ctx.lineWidth = lw * (1 + t * 2);
       ctx.stroke(path);
       ctx.restore();
+    }
+  }
+
+  /**
+   * Connected same-color groups for drawing: active, unfrozen boxes of one color whose grid cells
+   * share an edge and that are drawn at the same offset from their grid position (so pieces gliding
+   * together on a belt stay merged, a piece mid-move does not). The dragged box is excluded so it
+   * reads as detaching. Only groups of 2+ are returned.
+   */
+  private visualGroups(state: GameState, view: View): Box[][] {
+    const cand: Box[] = [];
+    for (const b of state.boxes) {
+      if (b.state === 'active' && b.frozen === 0 && b.id !== view.dragBoxId) cand.push(b);
+    }
+    if (cand.length < 2) return [];
+    const owner = new Map<string, number>(); // "x,y" -> index in cand
+    cand.forEach((b, i) => {
+      for (const c of b.cells) owner.set(`${b.x + c.x},${b.y + c.y}`, i);
+    });
+    const parent = cand.map((_, i) => i);
+    const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+    const off = (b: Box): [number, number] => {
+      const p = this.positions.get(b.id);
+      return p ? [p.rx - b.x, p.ry - b.y] : [0, 0];
+    };
+    cand.forEach((b, i) => {
+      const [oxA, oyA] = off(b);
+      for (const c of b.cells) {
+        for (const [nx, ny] of [[b.x + c.x + 1, b.y + c.y], [b.x + c.x, b.y + c.y + 1]]) {
+          const j = owner.get(`${nx},${ny}`);
+          if (j === undefined || j === i) continue;
+          const o = cand[j];
+          if (o.color !== b.color) continue;
+          const [oxB, oyB] = off(o);
+          if (Math.abs(oxA - oxB) > 0.01 || Math.abs(oyA - oyB) > 0.01) continue;
+          parent[find(i)] = find(j);
+        }
+      }
+    });
+    const comps = new Map<number, Box[]>();
+    cand.forEach((b, i) => {
+      const r = find(i);
+      const list = comps.get(r);
+      if (list) list.push(b);
+      else comps.set(r, [b]);
+    });
+    return [...comps.values()].filter((g) => g.length > 1);
+  }
+
+  /** One merged outline and fill for a group, faint seams between pieces, per-piece highlights. */
+  private drawGroup(members: Box[], view: View, now: number): void {
+    const ctx = this.ctx;
+    const cs = this.cellSize;
+    const first = members[0];
+    const p0 = this.positions.get(first.id);
+    const offX = p0 ? p0.rx - first.x : 0;
+    const offY = p0 ? p0.ry - first.y : 0;
+    const bx = this.originX + offX * cs;
+    const by = this.originY + offY * cs;
+    const inset = cs * 0.06;
+    const radius = Math.min(cs * 0.18, (cs - inset * 2) / 2);
+    const lw = Math.max(2, cs * 0.06);
+
+    const abs: Vec[] = [];
+    const owner = new Map<string, number>();
+    let minY = Infinity;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    for (const b of members) {
+      for (const c of b.cells) {
+        const x = b.x + c.x;
+        const y = b.y + c.y;
+        abs.push({ x, y });
+        owner.set(`${x},${y}`, b.id);
+        minY = Math.min(minY, y);
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x + 1);
+      }
+    }
+    const union = loopsPath(outlineLoops(abs), bx, by, cs, inset, radius);
+
+    ctx.fillStyle = boxFill(first.color);
+    ctx.fill(union);
+    ctx.save();
+    ctx.clip(union);
+    for (const b of members) {
+      const rc = this.regionCanvas(b.region);
+      ctx.drawImage(rc.canvas, 0, 0, b.region.w, b.region.h, bx + b.x * cs, by + b.y * cs, b.bw * cs, b.bh * cs);
+    }
+    const sy = by + minY * cs;
+    const g = ctx.createLinearGradient(0, sy, 0, sy + cs * 0.5);
+    g.addColorStop(0, 'rgba(255,255,255,0.10)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(bx + minX * cs, sy, (maxX - minX) * cs, cs * 0.5);
+
+    // Faint seams where two pieces meet (they can still be pulled apart).
+    ctx.beginPath();
+    const m = cs * 0.2;
+    for (const [key, id] of owner) {
+      const [x, y] = key.split(',').map(Number);
+      const right = owner.get(`${x + 1},${y}`);
+      if (right !== undefined && right !== id) {
+        ctx.moveTo(bx + (x + 1) * cs, by + y * cs + m);
+        ctx.lineTo(bx + (x + 1) * cs, by + (y + 1) * cs - m);
+      }
+      const down = owner.get(`${x},${y + 1}`);
+      if (down !== undefined && down !== id) {
+        ctx.moveTo(bx + x * cs + m, by + (y + 1) * cs);
+        ctx.lineTo(bx + (x + 1) * cs - m, by + (y + 1) * cs);
+      }
+    }
+    ctx.globalAlpha = 0.5;
+    ctx.strokeStyle = boxStroke(first.color);
+    ctx.lineWidth = Math.max(1, lw * 0.45);
+    ctx.lineCap = 'round';
+    ctx.setLineDash([Math.max(2, cs * 0.06), Math.max(2, cs * 0.06)]);
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.strokeStyle = boxStroke(first.color);
+    ctx.lineWidth = lw;
+    ctx.stroke(union);
+
+    // Per-piece selection / hover / thaw so the player sees which piece they act on.
+    for (const b of members) {
+      const sel = b.id === view.selectedBoxId;
+      const hov = b.id === view.hoverBoxId;
+      const thaw = view.effects.some((e) => e.kind === 'thaw' && e.boxId === b.id);
+      if (!sel && !hov && !thaw) continue;
+      const path = loopsPath(shapeOutline(b.shape, b.cells), bx + b.x * cs, by + b.y * cs, cs, inset, radius);
+      if (sel) this.strokeSelected(b.color, path, lw);
+      else if (hov) this.strokeHover(path, lw);
+      this.drawThaw(b, path, view, now, lw);
     }
   }
 

@@ -27,9 +27,11 @@ export {
   sandBoxAtCell,
   boxCoversCell,
   buildOccupancy,
+  wallAtCell,
+  OCC_WALL,
   shakeBox,
 } from './grid';
 export { gameSpace, invalidateSpace, applyPull, chainPush } from './transfer';
 export type { GameSpace, Puller } from './transfer';
-export { createGame, stepGame, checkCompletions, boxComplete, dissolvedGrains } from './game';
-export { applyConveyors, buildConveyor, conveyorAtCell, DIR_VEC } from './conveyors';
+export { createGame, stepGame, checkCompletions, boxComplete, dissolvedGrains, connectedGroups, boxGroup } from './game';
+export { applyConveyors, buildConveyor, conveyorAtCell, conveyorPlan, riderNextFree, DIR_VEC } from './conveyors';

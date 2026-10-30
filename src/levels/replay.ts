@@ -28,11 +28,17 @@ export interface ReplayResult {
   state: GameState;
 }
 
-const STEP_RE = /^box#(\d+) -> \((-?\d+),(-?\d+)\)$/;
+// A step is "box#i -> (x,y)"; a trailing " &" means "don't wait for this drag to settle": the next
+// drag follows after GRAB_STEPS (the time a player needs to grab the next piece), e.g. to clear a
+// belt's path while a box rides it.
+const STEP_RE = /^box#(\d+) -> \((-?\d+),(-?\d+)\)( &)?$/;
 
-export function parseStep(step: string): { box: number; x: number; y: number } | null {
+/** Sim steps between a no-wait drag ("... &") and the next drag (0.5 s). */
+export const GRAB_STEPS = 30;
+
+export function parseStep(step: string): { box: number; x: number; y: number; noWait: boolean } | null {
   const m = STEP_RE.exec(step.trim());
-  return m ? { box: +m[1], x: +m[2], y: +m[3] } : null;
+  return m ? { box: +m[1], x: +m[2], y: +m[3], noWait: !!m[4] } : null;
 }
 
 /** Grid path (excluding the start) for `box` to (tx, ty) through cells where it fits. */
@@ -67,6 +73,22 @@ function versionSum(state: GameState): number {
   return v;
 }
 
+const DIR_VEC = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] } as const;
+
+/** True while some box on a conveyor can still ride on (belts move only every few dozen steps, so
+ *  a quiet stretch shorter than the belt interval must not end the settle). */
+function beltBusy(state: GameState): boolean {
+  for (const cv of state.conveyors ?? []) {
+    const [dx, dy] = DIR_VEC[cv.dir];
+    for (const b of state.boxes) {
+      if (b.state !== 'active' || b.frozen > 0) continue;
+      const on = b.cells.some((c) => cv.cells.some((k) => k.x === b.x + c.x && k.y === b.y + c.y));
+      if (on && canPlace(state, b, b.x + dx, b.y + dy)) return true;
+    }
+  }
+  return false;
+}
+
 /** Steps until nothing changes for `quiet` steps (or `max` steps). Returns steps taken. */
 export function settle(state: GameState, quiet = 45, max = 3600): number {
   let steps = 0;
@@ -76,7 +98,7 @@ export function settle(state: GameState, quiet = 45, max = 3600): number {
     stepGame(state);
     steps++;
     const v = versionSum(state);
-    if (v === last) {
+    if (v === last && !beltBusy(state)) {
       if (++still >= quiet) break;
     } else {
       still = 0;
@@ -125,7 +147,10 @@ export function replayLevel(level: LevelDef, plan: string[], opts: ReplayOptions
     drags++;
     const before = state.boxes.filter((b) => b.state === 'active').map((b) => b.id);
     const t = state.tick;
-    const s = settle(state, quiet, maxPer);
+    let s = 0;
+    if (p.noWait) {
+      for (; s < GRAB_STEPS && !state.won; s++) stepGame(state);
+    } else s = settle(state, quiet, maxPer);
     steps += s;
     longest = Math.max(longest, s);
     for (const b of state.boxes)

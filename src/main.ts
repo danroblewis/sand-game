@@ -279,6 +279,7 @@ function frame(now: number): void {
       steps++;
     }
     if (steps === MAX_STEPS_PER_FRAME && accumulator > STEP_MS) accumulator = 0; // drop backlog
+    view.stepFrac = Math.min(1, accumulator / STEP_MS);
     drainEvents(now);
     releaseGoneHeldBox();
     fixSelection(state, view);

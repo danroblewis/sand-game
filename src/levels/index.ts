@@ -50,13 +50,24 @@ const bx = (shape: ShapeName, x: number, y: number, color: ColorId, frozen?: num
 //   below, so with a color shared by several boxes keep its debris out of other layers' way.
 //   Once every box of a color is gone its debris vanishes: stacks of unique colors (3+ layers)
 //   can then be caught from below one after another, or peeled from the side.
-// - CONVEYORS: a belt is a walkable strip; any unfrozen box with a cell on it rides one cell per
-//   6 steps toward the end (~0.1 s per cell) and queues behind whatever blocks it: the sand box
-//   face, the box ahead, a frozen box. Drop a box anywhere on the belt and it rides into contact;
-//   when the front box pops, the queue advances and the next box docks. A frozen box on the belt
-//   holds up the queue; when it thaws it rides on and the queue follows. The player may drag a
-//   box back off the belt (nothing is a trap), so belt puzzles are about order and timing. Boxes
-//   one cell thick along the belt keep the queue tight (2x1 on up/down belts, 1x2 on left/right).
+// - CONVEYORS: a belt is a walkable strip; any unfrozen box with a cell on it rides one cell
+//   every 100 steps (~1.7 s per cell, so a 4-cell ride takes ~7 s) toward the end and queues
+//   behind whatever blocks it: the sand box face, the box ahead, a frozen box, a wall, or any box
+//   parked in its path (riders wait until it is moved). When the front box pops, the queue
+//   advances and the next box docks. Belts are slow on purpose: drop a box, then do something
+//   else (clear the path, fetch the next box) while it crawls. A frozen box on the belt holds the
+//   queue; when it thaws it rides on and the queue follows. Dragging a box back off the belt is
+//   allowed. Boxes one cell thick along the belt keep the queue tight (2x1 on up/down belts).
+//   In authored solutions a step ending in " &" doesn't wait for the ride to finish.
+// - GROUPS: same-color boxes that share an edge pop together only when all are full. A box that
+//   is full but touching an unfinished buddy stays (and keeps blocking its spot): separate them.
+//   A pair fed side by side under a 2-wide sand box stalled short (~1.0 + 0.85), while feeding
+//   them one after another worked, so keep same-color boxes apart when they dock.
+// - WALLS are plain obstacle cells (no sand): use them to fence a sand box so a belt lane is the
+//   only way in.
+// - Catching many layers from below in turn: a 2x4 sand box with 4 unique colors empties
+//   cleanly; in a 2x5 with 5 colors the 4th catch stalls at ~1.8/2 (the last layer slumps into
+//   the gap), and a 1-wide 5-tall column stalls at the 3rd. Keep belt-fed stacks at 4 layers.
 // - Same-color boxes that touch exchange sand (gravity/slump between boxes): keep same-color
 //   boxes apart unless you want one to feed the other. Two same-color boxes stacked under a sand
 //   box both fill. Two same-color boxes on the two sides of a top layer share it.
@@ -67,7 +78,7 @@ const bx = (shape: ShapeName, x: number, y: number, color: ColorId, frozen?: num
 //
 // Map legend in the level comments: # sand box, capital letter = box (R red, O orange, Y yellow,
 // G green, T teal, B blue, P purple, K pink, W white), lower-case = frozen box, ^ v < > = empty belt
-// cell running in that direction, . empty.
+// cell running in that direction, = wall, . empty.
 
 export const LEVELS: LevelDef[] = [
   //   . . . . . .
@@ -454,16 +465,17 @@ export const LEVELS: LevelDef[] = [
     ],
   },
   //   # # < < < < <
-  //   # # . . . . .
+  //   # # . T . . .
   //   # # # # # . .
   //   # # . . . . .
-  //   . . . . T . Y
+  //   . . . . . . Y
   //   . . . R . G Y
   //   O O . R . G .
   //   B B . . . . .
-  // Solution: The belt carries yellow then green along the top row to the tall box (they drink its
-  // top two layers). Orange and teal catch the small walls from below, blue catches the tall box
-  // from below, and the red that dropped to the floor is drunk from the side.
+  // Solution: Drop yellow at the start of the belt; while it crawls along the top row, move the
+  // parked teal box out of its path and under the teal wall. Green follows on the belt (yellow and
+  // green drink the top two layers of the tall box). Orange catches its wall from below, blue
+  // catches the tall box from below, and the red that dropped to the floor is drunk from the side.
   {
     id: 'conveyor',
     name: 'Conveyor',
@@ -480,11 +492,18 @@ export const LEVELS: LevelDef[] = [
       bx('1x2', 3, 5, R),
       bx('2x1', 0, 7, B),
       bx('2x1', 0, 6, O),
-      bx('1x1', 4, 4, T),
+      bx('1x1', 3, 1, T),
     ],
     conveyors: [{ x: 6, y: 0, dir: 'left', length: 5 }],
-    hint: 'The belt carries boxes along the top row to the tall sand box. The pile drops as layers go: the belt only reaches the top two rows.',
-    solution: ['box#0 -> (5,0)', 'box#1 -> (5,0)', 'box#4 -> (2,3)', 'box#5 -> (4,3)', 'box#3 -> (0,4)', 'box#2 -> (2,3)'],
+    hint: 'The belt is slow: while a box crawls toward the tall sand box, move the teal box out of its way. The belt only reaches the top two rows.',
+    solution: [
+      'box#0 -> (6,0) &',
+      'box#5 -> (4,3)',
+      'box#1 -> (6,0)',
+      'box#4 -> (2,3)',
+      'box#3 -> (0,4)',
+      'box#2 -> (2,3)',
+    ],
   },
   //   . # # # # # .
   //   . # # # # # .
@@ -520,35 +539,43 @@ export const LEVELS: LevelDef[] = [
     hint: 'Reds go left under the red, blues go right under the blue: shunt them past each other.',
     solution: ['box#3 -> (6,6)', 'box#1 -> (3,4)', 'box#0 -> (3,5)', 'box#2 -> (0,6)', 'box#0 -> (6,6)', 'box#1 -> (0,6)'],
   },
-  //   . . # # . . .
-  //   . . # # . . .
-  //   # # ^ . # # .
-  //   # # ^ . # # .
-  //   # # ^ . # # .
-  //   # # b b . . .
-  //   . . ^ . . P P
-  //   Y Y ^ . . . O
-  //   Y Y ^ . R R O
-  // Solution: Put red on the belt: it queues behind the frozen blue. Two yellow pops thaw the
-  // blue, which rides on into the catch spot with red behind it. Purple catches the right wall
-  // from below, orange drinks the rest from the side.
+  //   . . = # # = . .
+  //   . . = # # = . .
+  //   . . = # # = . .
+  //   . . = # # = . .
+  //   . . = ^ . = R R
+  //   g g = ^ . = B B
+  //   O O = ^ . = Y Y
+  //   . . . ^ . . . .
+  //   # # . ^ . . . .
+  //   # # . . . . . .
+  // Solution: Orange leaves the left pocket and docks beside its box. Yellow blocks the right
+  // pocket: park it at the bottom. Blue goes on the belt, red right behind it (the queue advances
+  // as blue pops); three pops thaw green, which goes on the belt next, then the parked yellow.
   {
-    id: 'ice-lane',
-    name: 'Ice Lane',
-    width: 7,
-    height: 9,
-    sandBoxes: [sb(2, 0, 2, 2, [[B, 2], [R, 2]]), sb(0, 2, 2, 4, [[Y, 4]]), sb(4, 2, 2, 3, [[P, 2], [O, 2]])],
+    id: 'gauntlet',
+    name: 'Gauntlet',
+    width: 8,
+    height: 10,
+    sandBoxes: [sb(3, 0, 2, 4, [[B, 2], [R, 2], [G, 2], [Y, 2]]), sb(0, 8, 2, 2, [[O, 2]])],
+    walls: [{ x: 2, y: 0 }, { x: 2, y: 1 }, { x: 2, y: 2 }, { x: 2, y: 3 }, { x: 2, y: 4 }, { x: 2, y: 5 }, { x: 2, y: 6 }, { x: 5, y: 0 }, { x: 5, y: 1 }, { x: 5, y: 2 }, { x: 5, y: 3 }, { x: 5, y: 4 }, { x: 5, y: 5 }, { x: 5, y: 6 }],
+    conveyors: [{ x: 3, y: 8, dir: 'up', length: 5 }],
     boxes: [
-      bx('2x1', 0, 7, Y),
-      bx('2x1', 0, 8, Y),
-      bx('2x1', 2, 5, B, 2),
-      bx('1x2', 6, 7, O),
-      bx('2x1', 5, 6, P),
-      bx('2x1', 4, 8, R),
+      bx('2x1', 6, 6, Y),
+      bx('2x1', 6, 5, B),
+      bx('2x1', 6, 4, R),
+      bx('2x1', 0, 6, O),
+      bx('2x1', 0, 5, G, 3),
     ],
-    conveyors: [{ x: 2, y: 8, dir: 'up', length: 7 }],
-    hint: 'The frozen box holds up the belt queue until it thaws; then it rides on to the sand box, and the queue follows.',
-    solution: ['box#5 -> (2,7)', 'box#0 -> (0,6)', 'box#1 -> (0,6)', 'box#4 -> (4,5)', 'box#3 -> (6,3)'],
+    hint: 'The walled sand box is fed only by the belt: queue the colors bottom layer first. Park the boxes that come out in the wrong order while the belt crawls.',
+    solution: [
+      'box#3 -> (2,9)',
+      'box#0 -> (6,9)',
+      'box#1 -> (3,7) &',
+      'box#2 -> (3,8)',
+      'box#4 -> (3,7) &',
+      'box#0 -> (3,8)',
+    ],
   },
   //   # # . . . . # #
   //   # # . . . . # #

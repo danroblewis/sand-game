@@ -1,6 +1,6 @@
 // Grid-level placement and movement of boxes.
 
-import type { Box, GameState } from './types';
+import type { Box, GameState, Vec } from './types';
 import { P_SHAKE, SHAKE_HOPS } from './constants';
 import { shakeRegion } from './sand';
 
@@ -11,6 +11,15 @@ export function boxCoversCell(box: Box, bx: number, by: number, gx: number, gy: 
   if (lx < 0 || ly < 0 || lx >= box.bw || ly >= box.bh) return false;
   for (const c of box.cells) if (c.x === lx && c.y === ly) return true;
   return false;
+}
+
+/** Occupancy code for wall cells in `buildOccupancy`. */
+export const OCC_WALL = -1_000_000;
+
+/** Wall tile at grid cell (gx, gy), if any. */
+export function wallAtCell(state: GameState, gx: number, gy: number): Vec | undefined {
+  for (const w of state.walls) if (w.x === gx && w.y === gy) return w;
+  return undefined;
 }
 
 /** Sand box covering grid cell (gx, gy), if any. */
@@ -30,8 +39,8 @@ export function boxAtCell(state: GameState, gx: number, gy: number): Box | undef
 }
 
 /**
- * Occupancy grid (row-major, width*height): 0 = empty, -(sandBoxId+1) for sand boxes,
- * boxId+1 for active boxes. `excludeBoxId` leaves that box out.
+ * Occupancy grid (row-major, width*height): 0 = empty, -(sandBoxId+1) for sand boxes, OCC_WALL for
+ * walls, boxId+1 for active boxes. `excludeBoxId` leaves that box out.
  */
 export function buildOccupancy(state: GameState, excludeBoxId = -1): Int32Array {
   const { width, height } = state;
@@ -41,6 +50,7 @@ export function buildOccupancy(state: GameState, excludeBoxId = -1): Int32Array 
       for (let x = sb.x; x < sb.x + sb.w; x++)
         if (x >= 0 && y >= 0 && x < width && y < height) occ[y * width + x] = -(sb.id + 1);
   }
+  for (const w of state.walls) if (w.x >= 0 && w.y >= 0 && w.x < width && w.y < height) occ[w.y * width + w.x] = OCC_WALL;
   for (const b of state.boxes) {
     if (b.state !== 'active' || b.id === excludeBoxId) continue;
     for (const c of b.cells) {
@@ -52,14 +62,14 @@ export function buildOccupancy(state: GameState, excludeBoxId = -1): Int32Array 
   return occ;
 }
 
-/** All cells in bounds, overlapping no sand box and no other active box (conveyor belts are
- *  walkable, not obstacles). */
+/** All cells in bounds, overlapping no sand box, no wall and no other active box (conveyor belts
+ *  are walkable, not obstacles). */
 export function canPlace(state: GameState, box: Box, x: number, y: number): boolean {
   for (const c of box.cells) {
     const gx = x + c.x;
     const gy = y + c.y;
     if (gx < 0 || gy < 0 || gx >= state.width || gy >= state.height) return false;
-    if (sandBoxAtCell(state, gx, gy)) return false;
+    if (sandBoxAtCell(state, gx, gy) || wallAtCell(state, gx, gy)) return false;
     for (const o of state.boxes) {
       if (o === box || o.state !== 'active') continue;
       if (boxCoversCell(o, o.x, o.y, gx, gy)) return false;

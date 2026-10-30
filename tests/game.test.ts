@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { COMPLETION_SLACK, DISSOLVE_STEPS, GRAINS_PER_UNIT, boxComplete, checkCompletions, dissolvedGrains, createGame, stepGame, countColor } from '../src/core';
+import { COMPLETION_SLACK, DISSOLVE_STEPS, GRAINS_PER_UNIT, boxComplete, boxGroup, checkCompletions, connectedGroups, dissolvedGrains, tryMoveBox, createGame, stepGame, countColor } from '../src/core';
 import type { GameEvent } from '../src/core';
 import { level, totalGrains } from './helpers';
 
@@ -180,3 +180,85 @@ describe('debris dissolution', () => {
     expect(dissolvedGrains(s)[1]).toBe(0);
   });
 });
+
+describe('connected same-color boxes complete together (rule 6b)', () => {
+  const fill = (b: { region: { cells: Uint8Array; count: number; capacity: number } }) => {
+    b.region.cells.fill(1);
+    b.region.count = b.region.capacity;
+  };
+
+  it('two touching red boxes under 2 cells of red: neither pops until both are full, then both in one step', () => {
+    const s = createGame(level({
+      sandBoxes: [{ x: 0, y: 0, w: 2, h: 1, layers: [{ color: 1, amount: 2 }] }],
+      boxes: [
+        { shape: '1x1', x: 0, y: 1, color: 1 },
+        { shape: '1x1', x: 1, y: 1, color: 1 },
+      ],
+    }), 5);
+    expect(boxGroup(s, 0).map((b) => b.id)).toEqual([0, 1]);
+    let popTick = -1;
+    for (let t = 0; t < 2000 && !s.won; t++) {
+      stepGame(s);
+      const done = s.events.filter((e) => e.type === 'boxCompleted');
+      s.events.length = 0;
+      if (done.length) {
+        expect(popTick).toBe(-1);
+        expect(done.map((e) => (e as { boxId: number }).boxId)).toEqual([0, 1]);
+        popTick = t;
+      }
+    }
+    expect(popTick).toBeGreaterThan(0);
+    expect(s.completedCount).toBe(2);
+    expect(s.won).toBe(true);
+  });
+
+  it('a full box held back by an unfilled partner pops once moved away', () => {
+    const s = createGame(level({ boxes: [{ shape: '1x1', x: 0, y: 0, color: 1 }, { shape: '1x1', x: 1, y: 0, color: 1 }] }));
+    fill(s.boxes[0]);
+    checkCompletions(s);
+    expect(s.boxes[0].state).toBe('active');
+    expect(tryMoveBox(s, 0, 0, 1)).toBe(true); // (0,1): only touches (1,0) by a corner
+    expect(boxGroup(s, 0).map((b) => b.id)).toEqual([0]);
+    stepGame(s);
+    expect(s.boxes[0].state).toBe('removed');
+    expect(s.boxes[1].state).toBe('active');
+  });
+
+  it('frozen boxes and other colors never join a group', () => {
+    const s = createGame(level({
+      boxes: [
+        { shape: '1x1', x: 0, y: 0, color: 1 },
+        { shape: '1x1', x: 1, y: 0, color: 1, frozen: 5 },
+        { shape: '1x1', x: 0, y: 1, color: 2 },
+      ],
+    }));
+    expect(connectedGroups(s).map((g) => g.map((b) => b.id))).toEqual([[0], [2]]);
+    fill(s.boxes[0]);
+    checkCompletions(s);
+    expect(s.boxes[0].state).toBe('removed');
+    expect(s.boxes[1].frozen).toBe(4);
+  });
+
+  it('three-box chains wait for the middle, then pop together (completedCount and frozen counters per box)', () => {
+    const s = createGame(level({
+      boxes: [
+        { shape: '1x1', x: 0, y: 0, color: 1 },
+        { shape: '2x1', x: 1, y: 0, color: 1 },
+        { shape: '1x2', x: 3, y: 0, color: 1 },
+        { shape: '1x1', x: 5, y: 5, color: 3, frozen: 3 },
+      ],
+    }));
+    expect(boxGroup(s, 2).map((b) => b.id)).toEqual([0, 1, 2]);
+    fill(s.boxes[0]);
+    fill(s.boxes[2]);
+    checkCompletions(s);
+    expect(s.completedCount).toBe(0);
+    fill(s.boxes[1]);
+    checkCompletions(s);
+    expect(s.boxes.slice(0, 3).map((b) => b.state)).toEqual(['removed', 'removed', 'removed']);
+    expect(s.completedCount).toBe(3);
+    expect(s.boxes[3].frozen).toBe(0);
+    expect(s.events.filter((e) => e.type === 'boxUnfrozen')).toEqual([{ type: 'boxUnfrozen', boxId: 3 }]);
+  });
+});
+

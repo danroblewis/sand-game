@@ -194,6 +194,27 @@ describe('validateLevel', () => {
     }
   });
 
+  it('accepts walls and rejects bad ones', () => {
+    const ok = base();
+    ok.walls = [{ x: 0, y: 0 }, { x: 1, y: 0 }];
+    expect(validateLevel(ok)).toEqual([]);
+    const cases: [LevelDef['walls'], RegExp][] = [
+      [[{ x: 6, y: 0 }], /wall#0.*out of bounds/],
+      [[{ x: 2, y: 1 }], /wall#0.*overlaps sandBox/],
+      [[{ x: 0, y: 6 }], /wall#0.*overlaps box/],
+      [[{ x: 0, y: 0 }, { x: 0, y: 0 }], /wall#1.*overlaps wall#0/],
+    ];
+    for (const [walls, re] of cases) {
+      const l = base();
+      l.walls = walls;
+      expect(validateLevel(l).join('\n')).toMatch(re);
+    }
+    const l = base();
+    l.walls = [{ x: 0, y: 5 }];
+    l.conveyors = [{ x: 0, y: 6, dir: 'up', length: 2 }];
+    expect(validateLevel(l).join('\n')).toMatch(/conveyor#0.*overlaps wall#0/);
+  });
+
   it('rejects duplicate level ids', () => {
     expect(validateLevels([base(), base()]).join('\n')).toMatch(/duplicate level id/);
   });

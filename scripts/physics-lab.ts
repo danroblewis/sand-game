@@ -156,3 +156,16 @@ run('SA2 up belt queue loaded at once', lvl(6, 10, [[2, 0, 2, 3, [[B, 2], [R, 2]
 run('SB side belt', lvl(8, 6, [[0, 1, 2, 3, [[B, 2], [R, 2], [G, 2]]]], [box('1x2', 4, 4, G), box('1x2', 5, 4, R)], [{ x: 7, y: 1, dir: 'left', length: 5 }]), ['box#0 -> (6,1)', 'box#1 -> (7,1)']);
 // SC. Frozen box on the belt holds the queue.
 run('SC frozen on belt', lvl(6, 10, [[2, 0, 2, 2, [[B, 2], [R, 2]]]], [box('2x1', 2, 5, R, 1), box('2x1', 4, 9, B), box('1x1', 0, 0, G)], [{ x: 2, y: 9, dir: 'up', length: 7 }]), ['box#1 -> (2,9)']);
+// AA. Five layers caught from below one after another (2-wide, 5 tall).
+run('AA five catches', lvl(8, 11, [[3, 0, 2, 5, [[B, 2], [R, 2], [G, 2], [8, 2], [Y, 2]]]], [box('2x1', 0, 10, B), box('2x1', 0, 9, R), box('2x1', 0, 8, G), box('2x1', 6, 10, 8), box('2x1', 6, 9, Y)]), ['box#0 -> (3,5)', 'box#1 -> (3,5)', 'box#2 -> (3,5)', 'box#3 -> (3,5)', 'box#4 -> (3,5)']);
+run('AA2 five catches with walls', { ...lvl(8, 11, [[3, 0, 2, 5, [[B, 2], [R, 2], [G, 2], [8, 2], [Y, 2]]]], [box('2x1', 0, 10, B), box('2x1', 0, 9, R), box('2x1', 0, 8, G), box('2x1', 6, 10, 8), box('2x1', 6, 9, Y)]), walls: [2, 5].flatMap((x) => [0, 1, 2, 3, 4, 5, 6, 7].map((y) => ({ x, y }))) }, ['box#0 -> (3,5)', 'box#1 -> (3,5)', 'box#2 -> (3,5)', 'box#3 -> (3,5)', 'box#4 -> (3,5)']);
+run('AB four catches 2x4', lvl(8, 11, [[3, 0, 2, 4, [[B, 2], [R, 2], [G, 2], [Y, 2]]]], [box('2x1', 0, 10, B), box('2x1', 0, 9, R), box('2x1', 0, 8, G), box('2x1', 6, 9, Y)]), ['box#0 -> (3,4)', 'box#1 -> (3,4)', 'box#2 -> (3,4)', 'box#3 -> (3,4)']);
+run('AC three catches 2x3', lvl(8, 11, [[3, 0, 2, 3, [[B, 2], [R, 2], [Y, 2]]]], [box('2x1', 0, 10, B), box('2x1', 0, 9, R), box('2x1', 6, 9, Y)]), ['box#0 -> (3,3)', 'box#1 -> (3,3)', 'box#2 -> (3,3)']);
+run('AD 1-wide five catches', lvl(8, 11, [[3, 0, 1, 5, [[B, 1], [R, 1], [G, 1], [8, 1], [Y, 1]]]], [box('1x1', 0, 10, B), box('1x1', 0, 9, R), box('1x1', 0, 8, G), box('1x1', 6, 10, 8), box('1x1', 6, 9, Y)]), ['box#0 -> (3,5)', 'box#1 -> (3,5)', 'box#2 -> (3,5)', 'box#3 -> (3,5)', 'box#4 -> (3,5)']);
+// AE. Group rule: two red 1x1 side by side under a 2-wide red sand box fill as one catcher.
+run('AE group catcher', lvl(7, 9, [[0, 0, 2, 2, [[R, 2], [B, 2]]]], [box('1x1', 4, 8, R), box('1x1', 5, 8, R), box('2x1', 4, 6, B)]), ['box#0 -> (0,2)', 'box#1 -> (1,2)']);
+run('AE2 one full red touching an empty red waits', lvl(7, 9, [[0, 0, 2, 1, [[R, 1]]]], [box('1x1', 4, 8, R), box('1x1', 5, 8, R)]), ['box#1 -> (5,7)', 'box#0 -> (0,1)', 'box#1 -> (1,1)', 'box#1 -> (1,3)']);
+// Result (2026-10-30): sequential reds both fill (the second catches the rest); a grouped pair
+// fed by the belt stalls at ~1.0 + 0.85 and never pops, so the group rule is not used in levels.
+run('AF buddy sequential on a belt', { ...lvl(7, 8, [[3, 0, 2, 2, [[R, 2], [B, 2]]]], [box('1x1', 0, 5, R), box('1x1', 2, 6, R)], [{ x: 0, y: 2, dir: 'right', length: 5 }]), walls: [{ x: 5, y: 2 }, { x: 3, y: 3 }, { x: 4, y: 3 }] }, ['box#0 -> (1,2)', 'box#1 -> (0,2)']);
+run('AG buddy pair on a belt (grouped)', { ...lvl(7, 8, [[3, 0, 2, 2, [[R, 2], [B, 2]]]], [box('1x1', 0, 5, R), box('1x1', 2, 6, R)], [{ x: 0, y: 2, dir: 'right', length: 5 }]), walls: [{ x: 5, y: 2 }, { x: 3, y: 3 }, { x: 4, y: 3 }] }, ['box#0 -> (1,2) &', 'box#1 -> (0,2)']);

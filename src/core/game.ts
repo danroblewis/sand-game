@@ -49,6 +49,7 @@ export function createGame(level: LevelDef, seed = 1): GameState {
     boxes,
     conveyors: (level.conveyors ?? []).map(buildConveyor),
     heldBoxId: null,
+    walls: (level.walls ?? []).map((w) => ({ x: w.x, y: w.y })),
     completedCount: 0,
     moves: 0,
     tick: 0,
@@ -161,26 +162,28 @@ export function boxComplete(box: Box): boolean {
 }
 
 /** Remove complete boxes (full within COMPLETION_SLACK), tick frozen counters, and detect the win
- *  (all boxes removed; leftover debris in the sand boxes does not matter). */
+ *  (all boxes removed; leftover debris in the sand boxes does not matter). Connected same-color
+ *  boxes (rule 6b) complete together: a group pops only when every member is complete. */
 export function checkCompletions(state: GameState): void {
   let completed = false;
-  for (const box of state.boxes) {
-    if (box.state !== 'active' || box.frozen !== 0) continue;
-    if (!boxComplete(box)) continue;
-    box.state = 'removed';
-    state.completedCount++;
-    state.events.push({
-      type: 'boxCompleted',
-      boxId: box.id,
-      x: box.x,
-      y: box.y,
-      cells: box.cells.map((c) => ({ x: c.x, y: c.y })),
-      color: box.color,
-    });
-    for (const other of state.boxes) {
-      if (other.state !== 'active' || other.frozen <= 0) continue;
-      other.frozen--;
-      if (other.frozen === 0) state.events.push({ type: 'boxUnfrozen', boxId: other.id });
+  for (const group of connectedGroups(state)) {
+    if (!group.every(boxComplete)) continue;
+    for (const box of group) {
+      box.state = 'removed';
+      state.completedCount++;
+      state.events.push({
+        type: 'boxCompleted',
+        boxId: box.id,
+        x: box.x,
+        y: box.y,
+        cells: box.cells.map((c) => ({ x: c.x, y: c.y })),
+        color: box.color,
+      });
+      for (const other of state.boxes) {
+        if (other.state !== 'active' || other.frozen <= 0) continue;
+        other.frozen--;
+        if (other.frozen === 0) state.events.push({ type: 'boxUnfrozen', boxId: other.id });
+      }
     }
     completed = true;
   }
@@ -189,4 +192,48 @@ export function checkCompletions(state: GameState): void {
     state.won = true;
     state.events.push({ type: 'won' });
   }
+}
+
+/** Do two boxes have cells sharing a grid edge? */
+function touching(a: Box, b: Box): boolean {
+  for (const ca of a.cells) {
+    const ax = a.x + ca.x;
+    const ay = a.y + ca.y;
+    for (const cb of b.cells) {
+      const d = Math.abs(ax - b.x - cb.x) + Math.abs(ay - b.y - cb.y);
+      if (d === 1) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Connected groups (rule 6b): active, unfrozen boxes of the same color whose cells share a grid
+ * edge, transitively. A lone box is a group of one. Groups are ordered by their lowest box id, and
+ * boxes inside a group by id.
+ */
+export function connectedGroups(state: GameState): Box[][] {
+  const live = state.boxes.filter((b) => b.state === 'active' && b.frozen === 0);
+  const seen = new Set<Box>();
+  const groups: Box[][] = [];
+  for (const start of live) {
+    if (seen.has(start)) continue;
+    seen.add(start);
+    const g = [start];
+    for (let k = 0; k < g.length; k++)
+      for (const o of live)
+        if (!seen.has(o) && o.color === g[k].color && touching(g[k], o)) {
+          seen.add(o);
+          g.push(o);
+        }
+    g.sort((a, b) => a.id - b.id);
+    groups.push(g);
+  }
+  return groups;
+}
+
+/** The connected group containing box `boxId` (empty if the box is not active and unfrozen). */
+export function boxGroup(state: GameState, boxId: number): Box[] {
+  for (const g of connectedGroups(state)) if (g.some((b) => b.id === boxId)) return g;
+  return [];
 }

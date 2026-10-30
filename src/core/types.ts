@@ -95,6 +95,8 @@ export interface LevelDef {
   sandBoxes: SandBoxDef[];
   boxes: BoxDef[];
   conveyors?: ConveyorDef[];
+  /** Fixed wall cells: obstacles like sand boxes, but holding no sand. */
+  walls?: Vec[];
   /** Optional one-line hint shown in the HUD. */
   hint?: string;
   /** Optional authored solution as drag steps "box#i -> (x,y)" (i = index into `boxes`). Levels are
@@ -159,6 +161,8 @@ export interface ConveyorState {
   length: number;
   /** Cells of the strip, in order from start to end. */
   cells: Vec[];
+  /** 0..1 progress toward the next belt step (for continuous rendering of riders). */
+  phase: number;
 }
 
 export type GameEvent =
@@ -178,6 +182,8 @@ export interface GameState {
   sandBoxes: SandBoxState[];
   boxes: Box[];
   conveyors: ConveyorState[];
+  /** Wall cells (copied from the level). Obstacles for movement; nothing else. */
+  walls: Vec[];
   /** Box currently held by the pointer (set by the input layer); conveyors leave it alone. */
   heldBoxId: number | null;
   /** Boxes completed so far (drives frozen counters). */

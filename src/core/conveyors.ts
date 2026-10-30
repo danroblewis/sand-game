@@ -17,7 +17,7 @@ export function buildConveyor(def: ConveyorDef, id: number): ConveyorState {
   const [dx, dy] = DIR_VEC[def.dir];
   const cells = [];
   for (let k = 0; k < def.length; k++) cells.push({ x: def.x + k * dx, y: def.y + k * dy });
-  return { id, x: def.x, y: def.y, dir: def.dir, length: def.length, cells };
+  return { id, x: def.x, y: def.y, dir: def.dir, length: def.length, cells, phase: 0 };
 }
 
 /** Conveyor whose strip covers grid cell (gx, gy), if any. */
@@ -37,17 +37,16 @@ function frontIndex(conv: ConveyorState, box: Box): number {
 }
 
 /**
- * Every CONVEYOR_INTERVAL steps: for each conveyor (id order), the active unfrozen boxes with any
- * cell on its strip (except the held box) are processed front-to-back (closest to the end first)
- * and each moves one cell in `dir` if canPlace allows; boxes that moved have vacated their cells,
- * boxes that could not move (and the held box) block those behind. A box rides at most once per
- * interval even if it touches two belts. Moved boxes are shaken and get `pushDir`; every other box's
- * `pushDir` is cleared. One `conveyed` event per conveyor that moved something.
+ * The next belt step, worked out on the current board: for each conveyor (id order), the active
+ * unfrozen boxes with any cell on its strip (except the held box) are processed front-to-back
+ * (closest to the end first) and each moves one cell in `dir` if canPlace allows; boxes that moved
+ * have vacated their cells, boxes that could not move (and the held box) block those behind. A box
+ * rides at most once per step even if it touches two belts. With `apply` false the moves are undone
+ * afterwards (a dry run for rendering). Returns, per conveyor, the boxes that move, in order.
  */
-export function applyConveyors(state: GameState): void {
-  if (state.conveyors.length === 0 || state.tick % CONVEYOR_INTERVAL !== 0) return;
+function planBelts(state: GameState, apply: boolean): Box[][] {
   const moved = new Set<Box>();
-  for (const b of state.boxes) b.pushDir = null;
+  const out: Box[][] = [];
   for (const conv of state.conveyors) {
     const [dx, dy] = DIR_VEC[conv.dir];
     const riders: { box: Box; k: number }[] = [];
@@ -56,18 +55,70 @@ export function applyConveyors(state: GameState): void {
       const k = frontIndex(conv, b);
       if (k >= 0) riders.push({ box: b, k });
     }
-    if (riders.length === 0) continue;
     riders.sort((a, b) => b.k - a.k || a.box.id - b.box.id);
-    const ids: number[] = [];
+    const list: Box[] = [];
     for (const { box } of riders) {
       if (!canPlace(state, box, box.x + dx, box.y + dy)) continue;
       box.x += dx;
       box.y += dy;
-      box.pushDir = conv.dir;
       moved.add(box);
-      ids.push(box.id);
-      shakeBox(state, box.id, dx, dy);
+      list.push(box);
     }
-    if (ids.length) state.events.push({ type: 'conveyed', conveyorId: conv.id, boxIds: ids, dir: conv.dir });
+    out.push(list);
   }
+  if (!apply)
+    state.conveyors.forEach((conv, i) => {
+      const [dx, dy] = DIR_VEC[conv.dir];
+      for (const b of out[i]) {
+        b.x -= dx;
+        b.y -= dy;
+      }
+    });
+  return out;
+}
+
+/**
+ * For rendering: the direction `box` will move on the next belt step if nothing changes before
+ * then (it rides a belt, is active, unfrozen and not held, and the cell ahead is free or is being
+ * vacated by the box ahead of it in the queue), else null. Pair with `conveyor.phase` to draw the
+ * box gliding.
+ */
+export function riderNextFree(state: GameState, box: Box): Dir | null {
+  const plan = planBelts(state, false);
+  for (let i = 0; i < plan.length; i++) if (plan[i].includes(box)) return state.conveyors[i].dir;
+  return null;
+}
+
+/** All boxes that would move on the next belt step (box id → direction), one dry run. */
+export function conveyorPlan(state: GameState): Map<number, Dir> {
+  const m = new Map<number, Dir>();
+  planBelts(state, false).forEach((list, i) => {
+    for (const b of list) m.set(b.id, state.conveyors[i].dir);
+  });
+  return m;
+}
+
+/**
+ * Runs every step: advances each conveyor's `phase` (0..1 toward the next belt step) and, every
+ * CONVEYOR_INTERVAL steps, performs the belt step (see planBelts). Moved boxes are shaken and get
+ * `pushDir`; every other box's `pushDir` is cleared. One `conveyed` event per conveyor that moved
+ * something. Belt moves are not player moves.
+ */
+export function applyConveyors(state: GameState): void {
+  if (state.conveyors.length === 0) return;
+  const t = state.tick % CONVEYOR_INTERVAL;
+  for (const conv of state.conveyors) conv.phase = t / CONVEYOR_INTERVAL;
+  if (t !== 0) return;
+  for (const b of state.boxes) b.pushDir = null;
+  const plan = planBelts(state, true);
+  state.conveyors.forEach((conv, i) => {
+    const list = plan[i];
+    if (list.length === 0) return;
+    const [dx, dy] = DIR_VEC[conv.dir];
+    for (const b of list) {
+      b.pushDir = conv.dir;
+      shakeBox(state, b.id, dx, dy);
+    }
+    state.events.push({ type: 'conveyed', conveyorId: conv.id, boxIds: list.map((b) => b.id), dir: conv.dir });
+  });
 }

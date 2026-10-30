@@ -103,6 +103,16 @@ export function validateLevel(level: LevelDef): string[] {
     }
   });
 
+  // Walls: single obstacle cells with no sand.
+  (level.walls ?? []).forEach((w, i) => {
+    const label = `wall#${i}(${w.x},${w.y})`;
+    if (!(isInt(w.x) && isInt(w.y)) || w.x < 0 || w.y < 0 || w.x >= W || w.y >= H) {
+      p.push(`${tag}: ${label} out of bounds`);
+      return;
+    }
+    claim(w.x, w.y, label);
+  });
+
   // Conveyors: a strip of `length` cells from (x, y) in `dir`. The whole strip must be on the board
   // and must not overlap sand boxes or other conveyors; boxes may start on a belt (belt cells are
   // walkable), and whatever lies beyond the strip end is fine.
@@ -131,7 +141,7 @@ export function validateLevel(level: LevelDef): string[] {
         return;
       }
       const o = owner[y * W + x];
-      if (o.startsWith('sandBox')) p.push(`${tag}: ${label} overlaps ${o} at (${x},${y})`);
+      if (o.startsWith('sandBox') || o.startsWith('wall')) p.push(`${tag}: ${label} overlaps ${o} at (${x},${y})`);
       if (belt[y * W + x]) p.push(`${tag}: ${label} overlaps ${belt[y * W + x]} at (${x},${y})`);
       else belt[y * W + x] = label;
     }

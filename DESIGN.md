@@ -93,6 +93,11 @@ box above another drains into it by gravity.
    `completedCount`, emit `boxCompleted`, decrement every frozen box's counter (emit `boxUnfrozen`
    when one hits 0). Leftover grains of that color stay in the sand boxes as debris and no longer
    matter. When all boxes are removed emit `won` and set `state.won = true` regardless of debris.
+6b. **Connected boxes complete together:** active boxes of the same color whose cells share an edge
+   form a connected group (they already exchange sand across the shared edge). A box completes only
+   when EVERY box in its group satisfies the completion test; then the whole group pops in the same
+   step. Separating a full box from its group lets it pop on its own at the next check. Frozen
+   boxes are not part of any group. Rendered as one merged outline so the rule is visible.
 7. **Debris dissolves:** after any completion, a color with grains still in sand boxes but no box
    of that color left on the board (frozen boxes count as remaining capacity) is finished: over
    `DISSOLVE_STEPS` (45) its remaining grains are removed at random, evenly, then one
@@ -199,10 +204,14 @@ A **conveyor** (`LevelDef.conveyors`, `ConveyorDef {x, y, dir, length}`) is a vi
 `length` grid cells starting at (x, y) and running in `dir`, usually ending at a sand box face.
 It replaces the earlier spring idea, which reached invisibly along a lane and grabbed boxes.
 - Any active, unfrozen box with at least one cell on the strip **rides** it: every
-  `CONVEYOR_INTERVAL` (6) steps, boxes on the belt are processed front-to-back (closest to the end
-  first) and each moves one cell in `dir` if `canPlace` allows (sand boxes, frozen boxes, the board
-  edge, boxes that did not move, and the held box block it). So a queue compacts toward the end,
-  and when the front box pops the queue advances.
+  `CONVEYOR_INTERVAL` (100 steps, about 1.7 s per cell: a deliberate slow burn so the player
+  shuffles other pieces while the belt crawls) boxes on the belt are processed front-to-back
+  (closest to the end first) and each moves one cell in `dir` if `canPlace` allows (sand boxes,
+  frozen boxes, the board edge, boxes that did not move, and the held box block it). So a queue
+  compacts toward the end, and when the front box pops the queue advances. Any box the player
+  parks in the belt's path blocks the riders until it is moved away. `ConveyorState.phase` (0..1)
+  is the progress toward the next step; riders whose next cell is free are drawn gliding by
+  `phase` so motion is continuous, not a hop.
 - A box the player is holding (`state.heldBoxId`, set by the input layer on drag start, cleared on
   release) is never carried and blocks boxes behind it. Dragging on, off, along, or against the
   belt is all allowed; after release the belt takes over.
@@ -213,6 +222,15 @@ It replaces the earlier spring idea, which reached invisibly along a lane and gr
 - Visual: a dark strip with rollers at both ends and animated chevrons crawling in `dir`.
 - Design purpose: a lane of boxes pressed against a sand box drains it in the order the lane was
   loaded; the player chooses what goes on the belt and when.
+
+## Walls
+
+`LevelDef.walls` is a list of fixed wall cells. They are obstacles for `canPlace` exactly like sand
+boxes, hold no sand, and are never docked to. Validator: in bounds, no overlap with sand boxes,
+boxes, conveyors, or other walls. Rendered as solid dark blocks with a subtle bevel so they read as
+immovable. Purpose: fence a sand box off so the only way to reach it is a conveyor lane (the
+"gauntlet" level: a multi-layer sand box behind walls, fed by a belt, so the player must queue the
+boxes in layer order while shuffling the rest of the board).
 
 ## Non-goals (v1)
 
