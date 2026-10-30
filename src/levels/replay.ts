@@ -61,7 +61,10 @@ export function boxPath(state: GameState, box: Box, tx: number, ty: number): [nu
 function versionSum(state: GameState): number {
   let v = state.completedCount * 1_000_003;
   for (const s of state.sandBoxes) v += regionVersion(s.region);
-  for (const b of state.boxes) v += regionVersion(b.region) + b.region.count;
+  // Box positions and spring states count as activity: a spring pushing a stack (one cell per
+  // few steps) or a box just pushed into contact must not end the settle.
+  for (const b of state.boxes) v += regionVersion(b.region) + b.region.count + (b.x + 1) * 7919 + (b.y + 1) * 104729;
+  for (const sp of state.springs ?? []) v += sp.loaded ? 15485863 : 0;
   return v;
 }
 

@@ -197,9 +197,11 @@ work for touch and mouse.
 
 A **spring** is a fixed one-cell tile (`LevelDef.springs`, `SpringDef {x, y, dir}`) that pushes
 the contiguous stack of boxes in front of it. Rules:
-- The **stack** is found by pushing: start with every active box occupying the cell in front of the
-  spring; if moving the set one cell in `dir` would overlap another active unfrozen box, that box
-  joins the set; repeat. If any cell the set would move into is out of bounds, a sand box, a spring,
+- The spring's **arm reaches along its lane**: scan from the cell in front of the spring through
+  empty cells to the first box in the lane (a sand box, another spring, or the board edge ends the
+  lane; an empty lane does nothing). The **stack** starts with that box; if moving the set one cell
+  in `dir` would overlap another active unfrozen box, that box joins the set; repeat. The stack is
+  recomputed every step so `pushDir`/`loaded` are always current. If any cell the set would move into is out of bounds, a sand box, a spring,
   or a frozen box, the stack is **blocked** (spring `loaded = true`), else the whole set moves one
   cell in `dir` (emit `springPushed`, no `moves` increment, `shakeBox` each pushed box).
 - Pushes happen inside `stepGame`, at most one cell every `SPRING_INTERVAL` (4) steps per spring,

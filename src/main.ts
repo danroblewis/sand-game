@@ -3,7 +3,7 @@ import type { GameState, LevelDef } from './core/types';
 import { createGame, moveBoxToward, stepGame, tryMoveBox } from './core';
 import { SIM_SEED, generateDailySeed, generateLevel, generateLevelWithStats } from './levels/generate';
 import { LEVELS } from './levels';
-import { Renderer, createView, effectForEvent } from './render/renderer';
+import { Renderer, createView } from './render/renderer';
 import { attachPointer } from './input/pointer';
 import { attachKeyboard, fixSelection } from './input/keyboard';
 import { Hud } from './ui/hud';
@@ -172,16 +172,18 @@ function drainEvents(now: number): void {
   const evs = state.events;
   if (evs.length === 0) return;
   for (const ev of evs) {
-    const fx = effectForEvent(ev, now);
-    if (fx) view.effects.push(fx);
+    for (const fx of renderer.effectsForEvent(ev, state, now)) view.effects.push(fx);
     if (ev.type === 'won') {
       const won = state;
       const m = mode;
-      if (m.kind === 'random') hud.markRandomSolved(won.level.id, m.difficulty);
-      else hud.markCompleted(won.level.id);
+      // Only real campaign/random levels count (not debug playLevel() boards).
+      if (won.level === currentLevel) {
+        if (m.kind === 'random') hud.markRandomSolved(won.level.id, m.difficulty);
+        else hud.markCompleted(won.level.id);
+      }
       window.clearTimeout(winTimer);
       winTimer = window.setTimeout(() => {
-        if (state !== won) return;
+        if (state !== won || won.level !== currentLevel) return;
         if (m.kind === 'random') hud.showWin(won.moves, 'random');
         else hud.showWin(won.moves, m.index < LEVELS.length - 1 ? 'next' : 'last');
       }, WIN_DELAY_MS);
@@ -306,6 +308,8 @@ window.__game = {
   restart,
   /** Debug: play an arbitrary LevelDef without changing the level index. */
   playLevel(def: LevelDef) {
+    window.clearTimeout(winTimer);
+    hud.hideWin();
     state = createGame(def, newSeed());
     view.selectedBoxId = view.dragBoxId = view.hoverBoxId = null;
     view.effects.length = 0;

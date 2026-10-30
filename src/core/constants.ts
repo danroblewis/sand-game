@@ -65,3 +65,6 @@ export const COMPLETION_SLACK = Math.round(0.1 * GRAINS_PER_UNIT);
 /** Debris dissolution: once no box of a color remains on the board (active or frozen), its leftover
  *  grains in the sand boxes crumble away over this many steps (~0.75 s). */
 export const DISSOLVE_STEPS = 45;
+
+/** A spring pushes its stack at most one cell every this many steps. */
+export const SPRING_INTERVAL = 4;

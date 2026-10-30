@@ -91,8 +91,15 @@ export function attachPointer(deps: PointerDeps): () => void {
     }
     const g = renderer.pixelToGrid(px, py);
     // Round (rather than floor) so the box follows the finger with half-cell hysteresis.
-    const tx = Math.round(g.x - drag.offX);
-    const ty = Math.round(g.y - drag.offY);
+    let tx = Math.round(g.x - drag.offX);
+    let ty = Math.round(g.y - drag.offY);
+    // A spring is pushing this box: don't even try to drag it backwards (no jitter, no fight).
+    switch (box.pushDir) {
+      case 'up': ty = Math.min(ty, box.y); break;
+      case 'down': ty = Math.max(ty, box.y); break;
+      case 'left': tx = Math.min(tx, box.x); break;
+      case 'right': tx = Math.max(tx, box.x); break;
+    }
     if (tx !== box.x || ty !== box.y) {
       if (moveBoxToward(state, box.id, tx, ty) > 0) drag.moved = true;
     }

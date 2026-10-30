@@ -103,6 +103,27 @@ export function validateLevel(level: LevelDef): string[] {
     }
   });
 
+  // Springs: one cell each, an obstacle like a sand box; the cell in front must be on the board
+  // and must not be a sand box (the spring could never push anything).
+  const DIRS: Record<string, [number, number]> = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+  (level.springs ?? []).forEach((sp, i) => {
+    const label = `spring#${i}(${sp.dir}@${sp.x},${sp.y})`;
+    const d = DIRS[sp.dir];
+    if (!d) {
+      p.push(`${tag}: ${label} has an unknown direction`);
+      return;
+    }
+    if (!(isInt(sp.x) && isInt(sp.y)) || sp.x < 0 || sp.y < 0 || sp.x >= W || sp.y >= H) {
+      p.push(`${tag}: ${label} out of bounds`);
+      return;
+    }
+    claim(sp.x, sp.y, label);
+    const fx = sp.x + d[0];
+    const fy = sp.y + d[1];
+    if (fx < 0 || fy < 0 || fx >= W || fy >= H) p.push(`${tag}: ${label} faces the board edge`);
+    else if (owner[fy * W + fx].startsWith('sandBox')) p.push(`${tag}: ${label} faces a sand box`);
+  });
+
   // Conservation per color.
   const cap = levelCapacityByColor(level);
   const sand = levelSandByColor(level);

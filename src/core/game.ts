@@ -5,6 +5,7 @@ import type { Box, GameState, LevelDef, SandBoxState } from './types';
 import { SHAPES, shapeBounds } from './shapes';
 import { beginStep, createRegion, endStep, fillLayers, sweepSpace } from './sand';
 import { applyPull, gameSpace } from './transfer';
+import { applySprings } from './springs';
 import { COMPLETION_SLACK, DISSOLVE_STEPS } from './constants';
 import { nextFloat } from './rng';
 import { touchRegion } from './sand';
@@ -37,6 +38,7 @@ export function createGame(level: LevelDef, seed = 1): GameState {
       frozen: Math.max(0, def.frozen ?? 0),
       region: createRegion(fw, bh * N, mask),
       state: 'active',
+      pushDir: null,
     };
   });
   return {
@@ -45,6 +47,7 @@ export function createGame(level: LevelDef, seed = 1): GameState {
     height: level.height,
     sandBoxes,
     boxes,
+    springs: (level.springs ?? []).map((d, id) => ({ id, x: d.x, y: d.y, dir: d.dir, loaded: false })),
     completedCount: 0,
     moves: 0,
     tick: 0,
@@ -67,6 +70,7 @@ export function stepGame(state: GameState): void {
   sweepSpace(sp, state.rng, state.tick);
   endStep(sp);
   if (sp.crossings > 0) state.events.push({ type: 'transfer', count: sp.crossings });
+  applySprings(state); // box moves change the dockings: the space rebuilds next step
   checkCompletions(state);
   state.tick++;
 }

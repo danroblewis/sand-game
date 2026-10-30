@@ -21,6 +21,8 @@ npm run dev      # http://localhost:5173
   their edge (three grains). Clear a layer to expose the one under it.
 - A box pops when it is within a tenth of a cell of full. Leftover specks of a finished color
   dissolve.
+- Springs push the stack of boxes in their lane up against a sand box. When the front box pops,
+  the next one is pushed into contact, so the lane drains the sand box in the order you loaded it.
 
 ## Endless mode
 

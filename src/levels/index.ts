@@ -44,12 +44,21 @@ const bx = (shape: ShapeName, x: number, y: number, color: ColorId, frozen?: num
 //   side shape), 3-wide 10-13 s per cell. Tall pieces (1x3, J/L bars) beside a 1-row layer take
 //   just that layer. SIDE at a BURIED layer takes a wedge (~0.4 cell) and stalls until the layers
 //   above are gone. Dock at the pile surface; as boxes take sand the pile drops: dock lower.
-// - DEBRIS: a box pops within 0.1 cell of full and the leftover grains stay. Debris of another
-//   color on top of a layer seals it from the side (it stalls at about half), and debris of
-//   another color on the floor blocks the next catch from below. So, per sand box: at most ONE
-//   layer goes out through the bottom (the bottom layer, caught first or last) and ONE through
-//   the side (the top layer). Two colors per sand box is the safe maximum; more layers only if
-//   they share a color (same-color debris is harmless: the next same-color box takes it).
+// - DEBRIS: a box pops within 0.1 cell of full; the leftover grains stay while another box of that
+//   color is still on the board, then dissolve (~0.75 s). While they stay, foreign debris on top of
+//   a layer seals it from the side and foreign debris on the floor blocks the next catch from
+//   below, so with a color shared by several boxes keep its debris out of other layers' way.
+//   Once every box of a color is gone its debris vanishes: stacks of unique colors (3+ layers)
+//   can then be caught from below one after another, or peeled from the side.
+// - SPRINGS: a spring's arm reaches along its lane (its row/column, through empty cells) to the
+//   first box and pushes that box and everything stacked in front of it one cell per 4 steps
+//   until blocked by a sand box, frozen box, spring or the edge. Only boxes covering a cell of the
+//   spring's own column/row are in the lane. A box loaded at the spring end travels to the sand
+//   box (or to the box ahead of it) by itself; when the front box pops, the next is pushed into
+//   contact. A pushed box can't be dragged back, only sideways (if there is room) or along the
+//   push, so a wrong box in a walled lane is stuck: load lanes in layer order. A frozen box in a
+//   lane blocks it; when it thaws it is launched together with everything behind it.
+//   Use boxes 1 cell thick along the push (2x1 in up/down lanes, 1x2 in left/right lanes).
 // - Same-color boxes that touch exchange sand (gravity/slump between boxes): keep same-color
 //   boxes apart unless you want one to feed the other. Two same-color boxes stacked under a sand
 //   box both fill. Two same-color boxes on the two sides of a top layer share it.
@@ -58,8 +67,9 @@ const bx = (shape: ShapeName, x: number, y: number, color: ColorId, frozen?: num
 // - Timing: catches ~1 s; side drains 2-9 s per 2 cells; a 2x2 drinking from the side of a
 //   2-wide box keeps trickling for ~15-18 s.
 //
-// Map legend used in hints/notes: R red, O orange, Y yellow, G green, T teal, B blue, P purple,
-// K pink, W white.
+// Map legend in the level comments: # sand box, capital letter = box (R red, O orange, Y yellow,
+// G green, T teal, B blue, P purple, K pink, W white), lower-case = frozen box, ^ v < > = spring
+// pushing in that direction, . empty.
 
 export const LEVELS: LevelDef[] = [
   //   . . . . . .
@@ -185,27 +195,6 @@ export const LEVELS: LevelDef[] = [
     hint: 'The box under the sand box is the wrong color: make room before you can catch from below.',
     solution: ['box#2 -> (2,0)', 'box#1 -> (4,4)', 'box#3 -> (2,6)', 'box#0 -> (0,2)'],
   },
-  //   B . . . . Y
-  //   B . . . . Y
-  //   # # . . . .
-  //   # # . . . .
-  //   . . . . . .
-  //   . . . . # #
-  //   . . . . # #
-  //   . . . . . .
-  //   R R G G . .
-  // Solution: Yellow docks beside the top of the upper box, blue beside the top of the lower box;
-  // red and green catch the bottoms from below.
-  {
-    id: 'zigzag',
-    name: 'Zigzag',
-    width: 6,
-    height: 9,
-    sandBoxes: [sb(0, 2, 2, 2, [[R, 2], [Y, 2]]), sb(4, 5, 2, 2, [[G, 2], [B, 2]])],
-    boxes: [bx('1x2', 0, 0, B), bx('1x2', 5, 0, Y), bx('2x1', 0, 8, R), bx('2x1', 2, 8, G)],
-    hint: 'Two sand boxes: drain each top layer from the side, catch each bottom layer from below.',
-    solution: ['box#1 -> (2,2)', 'box#0 -> (3,5)', 'box#2 -> (0,4)', 'box#3 -> (4,7)'],
-  },
   //   . . . . . # #
   //   . . . . . . .
   //   . . # # g . .
@@ -254,6 +243,44 @@ export const LEVELS: LevelDef[] = [
     ],
     hint: 'The blue ice box is one row too low. Pop two boxes, then lift it into the gap under its sand.',
     solution: ['box#0 -> (4,0)', 'box#1 -> (2,8)', 'box#2 -> (2,2)', 'box#3 -> (4,6)'],
+  },
+  //   . . # . . .
+  //   . . # . . .
+  //   . . # . . .
+  //   # # . # # .
+  //   # # . # # .
+  //   . . . . . B
+  //   Y Y ^ P P R
+  //   Y Y P P . G
+  // Solution: Load the lane from the spring end in layer order: blue (bottom), red, green. Each
+  // box is carried up and catches its layer from below; the next one is pushed into contact when
+  // it pops. The yellow and purple walls are caught from below.
+  {
+    id: 'spring-loaded',
+    name: 'Spring Loaded',
+    width: 6,
+    height: 8,
+    sandBoxes: [sb(2, 0, 1, 3, [[B, 1], [R, 1], [G, 1]]), sb(0, 3, 2, 2, [[Y, 4]]), sb(3, 3, 2, 2, [[P, 4]])],
+    boxes: [
+      bx('1x1', 5, 6, R),
+      bx('1x1', 5, 7, G),
+      bx('1x1', 5, 5, B),
+      bx('2x1', 0, 7, Y),
+      bx('2x1', 0, 6, Y),
+      bx('2x1', 3, 6, P),
+      bx('2x1', 2, 7, P),
+    ],
+    springs: [{ x: 2, y: 6, dir: 'up' }],
+    hint: 'The spring pushes the lane up one box at a time. Load the colors in the order of the layers, bottom first.',
+    solution: [
+      'box#2 -> (2,5)',
+      'box#0 -> (2,5)',
+      'box#1 -> (2,5)',
+      'box#4 -> (0,5)',
+      'box#3 -> (0,5)',
+      'box#5 -> (3,5)',
+      'box#6 -> (3,5)',
+    ],
   },
   //   . Y . . . # #
   //   . Y . . . # #
@@ -312,30 +339,6 @@ export const LEVELS: LevelDef[] = [
       'box#1 -> (4,6)',
       'box#3 -> (2,6)',
     ],
-  },
-  //   . . . . . . .
-  //   . . . . . . .
-  //   # # # . # # #
-  //   # # # . # # #
-  //   g g g . y y y
-  //   # . . . . . #
-  //   . . B R . . .
-  // Solution: Red ducks up into the bay, blue slides right under the blue, red comes back and
-  // slides left under the red. Both ice bars thaw under their own sand and fill.
-  {
-    id: 'siding',
-    name: 'Siding',
-    width: 7,
-    height: 7,
-    sandBoxes: [
-      sb(0, 2, 3, 2, [[G, 3]]),
-      sb(4, 2, 3, 2, [[Y, 3]]),
-      sb(0, 5, 1, 1, [[R, 1]]),
-      sb(6, 5, 1, 1, [[B, 1]]),
-    ],
-    boxes: [bx('3x1', 0, 4, G, 2), bx('3x1', 4, 4, Y, 2), bx('1x1', 2, 6, B), bx('1x1', 3, 6, R)],
-    hint: 'Duck up into the bay to let the other box pass. Each ice bar thaws under its own sand.',
-    solution: ['box#3 -> (3,4)', 'box#2 -> (6,6)', 'box#3 -> (0,6)'],
   },
   //   # # . . . O O
   //   # # . . . . .
@@ -452,6 +455,39 @@ export const LEVELS: LevelDef[] = [
       'box#0 -> (3,0)',
     ],
   },
+  //   # # . . . . <
+  //   # # . . . . .
+  //   # # # # # . .
+  //   # # . . . . .
+  //   . . . . T . Y
+  //   . . . R . G Y
+  //   O O . R . G .
+  //   B B . . . . .
+  // Solution: The left-spring carries yellow then green along the top row to the tall box (they
+  // drink its top two layers). Orange and teal catch the small walls from below, blue catches the
+  // tall box from below, and the red that dropped to the floor is drunk from the side.
+  {
+    id: 'conveyor',
+    name: 'Conveyor',
+    width: 7,
+    height: 8,
+    sandBoxes: [
+      sb(0, 0, 2, 4, [[B, 2], [R, 2], [G, 2], [Y, 2]]),
+      sb(2, 2, 2, 1, [[O, 2]]),
+      sb(4, 2, 1, 1, [[T, 1]]),
+    ],
+    boxes: [
+      bx('1x2', 6, 4, Y),
+      bx('1x2', 5, 5, G),
+      bx('1x2', 3, 5, R),
+      bx('2x1', 0, 7, B),
+      bx('2x1', 0, 6, O),
+      bx('1x1', 4, 4, T),
+    ],
+    springs: [{ x: 6, y: 0, dir: 'left' }],
+    hint: 'The spring carries boxes along the top row to the tall sand box. The pile drops as layers go: the lane only reaches the top two rows.',
+    solution: ['box#0 -> (5,0)', 'box#1 -> (5,0)', 'box#4 -> (2,3)', 'box#5 -> (4,3)', 'box#3 -> (0,4)', 'box#2 -> (2,3)'],
+  },
   //   . # # # # # .
   //   . # # # # # .
   //   . # # t # # .
@@ -485,6 +521,36 @@ export const LEVELS: LevelDef[] = [
     ],
     hint: 'Reds go left under the red, blues go right under the blue: shunt them past each other.',
     solution: ['box#3 -> (6,6)', 'box#1 -> (3,4)', 'box#0 -> (3,5)', 'box#2 -> (0,6)', 'box#0 -> (6,6)', 'box#1 -> (0,6)'],
+  },
+  //   . . # # . . .
+  //   . . # # . . .
+  //   # # . . # # .
+  //   # # . . # # .
+  //   # # . . # # .
+  //   # # b b . . .
+  //   . . . . . P P
+  //   Y Y . . . . O
+  //   Y Y ^ . R R O
+  // Solution: Put red into the lane behind the frozen blue (it waits). Two yellow pops thaw the
+  // blue: the spring launches it into the catch spot and red follows. Purple catches the right
+  // wall from below, orange drinks the rest from the side.
+  {
+    id: 'ice-lane',
+    name: 'Ice Lane',
+    width: 7,
+    height: 9,
+    sandBoxes: [sb(2, 0, 2, 2, [[B, 2], [R, 2]]), sb(0, 2, 2, 4, [[Y, 4]]), sb(4, 2, 2, 3, [[P, 2], [O, 2]])],
+    boxes: [
+      bx('2x1', 0, 7, Y),
+      bx('2x1', 0, 8, Y),
+      bx('2x1', 2, 5, B, 2),
+      bx('1x2', 6, 7, O),
+      bx('2x1', 5, 6, P),
+      bx('2x1', 4, 8, R),
+    ],
+    springs: [{ x: 2, y: 8, dir: 'up' }],
+    hint: 'The ice box blocks the lane until it thaws; then the spring launches it and everything behind it.',
+    solution: ['box#5 -> (2,7)', 'box#0 -> (0,6)', 'box#1 -> (0,6)', 'box#4 -> (4,5)', 'box#3 -> (6,3)'],
   },
   //   # # . . . . # #
   //   # # . . . . # #

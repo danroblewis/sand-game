@@ -92,6 +92,7 @@ export interface LevelDef {
   height: number;
   sandBoxes: SandBoxDef[];
   boxes: BoxDef[];
+  springs?: SpringDef[];
   /** Optional one-line hint shown in the HUD. */
   hint?: string;
   /** Optional authored solution as drag steps "box#i -> (x,y)" (i = index into `boxes`). Levels are
@@ -132,6 +133,9 @@ export interface Box {
   color: ColorId;
   /** Remaining completions needed before this box unfreezes. 0 = movable and accepting sand. */
   frozen: number;
+  /** Direction a spring is currently pushing this box in, or null. The player cannot move the box
+   *  against this direction while it is set. */
+  pushDir: Dir | null;
   /** Fine grid region sized bw*N by bh*N with a mask built from `cells`. */
   region: SandRegion;
   state: BoxState;
@@ -157,6 +161,7 @@ export interface SpringState {
 
 export type GameEvent =
   | { type: 'boxCompleted'; boxId: number; x: number; y: number; cells: Vec[]; color: ColorId }
+  | { type: 'springPushed'; springId: number; boxIds: number[]; dir: Dir }
   | { type: 'boxUnfrozen'; boxId: number }
   | { type: 'boxMoved'; boxId: number; x: number; y: number }
   | { type: 'transfer'; count: number }
@@ -170,6 +175,7 @@ export interface GameState {
   height: number;
   sandBoxes: SandBoxState[];
   boxes: Box[];
+  springs: SpringState[];
   /** Boxes completed so far (drives frozen counters). */
   completedCount: number;
   /** Player moves (grid steps). Informational only; there is no timer and no scoring. */

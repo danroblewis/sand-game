@@ -1,5 +1,5 @@
 // Canvas renderer. Reads GameState; never mutates it.
-import type { Box, ColorId, GameEvent, GameState, SandRegion, ShapeName, Vec } from '../core/types';
+import type { Box, ColorId, Dir, GameEvent, GameState, SandRegion, ShapeName, SpringState, Vec } from '../core/types';
 import { SHADE_COUNT } from '../core/types';
 import { SHAPES } from '../core/shapes';
 import { regionVersion } from '../core/sand';
@@ -41,7 +41,11 @@ export type Effect =
       color: ColorId;
       sparks: Spark[];
     }
-  | { kind: 'thaw'; t0: number; dur: number; boxId: number };
+  | { kind: 'thaw'; t0: number; dur: number; boxId: number }
+  /** Coil snap when a spring pushes its stack. */
+  | { kind: 'spring'; t0: number; dur: number; springId: number }
+  /** Sparkle over a sand box whose leftover grains of `color` just dissolved. */
+  | { kind: 'debris'; t0: number; dur: number; color: ColorId; x: number; y: number; w: number; h: number; sparks: Spark[] };
 
 export interface View {
   selectedBoxId: number | null;
@@ -57,6 +61,16 @@ export function createView(): View {
 const POP_MS = 250;
 const SPARK_MS = 650;
 const THAW_MS = 450;
+const SPRING_SNAP_MS = 150;
+const DEBRIS_MS = 650;
+/** Box position lerp time constant while being launched by a spring. */
+const PUSH_LERP_TAU = 0.12;
+/** A color counts as "present" in a region if seen within this window (debris sparkle placement). */
+const DEBRIS_SEEN_MS = 2500;
+
+const DIR_VEC: Record<Dir, [number, number]> = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+/** Rotation that maps the local "up" axis onto `dir`. */
+const DIR_ANGLE: Record<Dir, number> = { up: 0, right: Math.PI / 2, down: Math.PI, left: -Math.PI / 2 };
 
 /** Build an effect for a game event (or null if the event has no visual). */
 export function effectForEvent(ev: GameEvent, now: number): Effect | null {
@@ -183,6 +197,8 @@ interface RegionCanvas {
   u32: Uint32Array;
   version: number;
   count: number;
+  /** performance.now() when each color (0..31) was last seen in the region. */
+  colorSeen: Float64Array;
 }
 
 function roundRectPath(x: number, y: number, w: number, h: number, r: number): Path2D {
@@ -201,6 +217,8 @@ function roundRectPath(x: number, y: number, w: number, h: number, r: number): P
 interface RenderPos {
   rx: number;
   ry: number;
+  /** Lerp time constant in seconds (longer while a spring launches the box). */
+  tau: number;
 }
 
 const LERP_TAU = 0.08; // seconds
@@ -333,7 +351,6 @@ export class Renderer {
     }
     const dt = this.lastTime ? Math.min(0.1, (now - this.lastTime) / 1000) : 0;
     this.lastTime = now;
-    const k = dt > 0 ? 1 - Math.exp(-dt / LERP_TAU) : 1;
 
     const ctx = this.ctx;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -342,18 +359,23 @@ export class Renderer {
 
     this.drawBoard();
     for (const sb of state.sandBoxes) this.drawSandBox(sb.x, sb.y, sb.w, sb.h, sb.region);
+    for (const sp of state.springs ?? []) this.drawSpring(sp, view, now);
 
     // Update animated positions.
     for (const b of state.boxes) {
       let p = this.positions.get(b.id);
       if (!p) {
-        p = { rx: b.x, ry: b.y };
+        p = { rx: b.x, ry: b.y, tau: LERP_TAU };
         this.positions.set(b.id, p);
       } else {
+        // A box the player grabs follows the finger quickly again.
+        if (b.id === view.dragBoxId) p.tau = LERP_TAU;
+        const k = dt > 0 ? 1 - Math.exp(-dt / p.tau) : 1;
         p.rx += (b.x - p.rx) * k;
         p.ry += (b.y - p.ry) * k;
         if (Math.abs(b.x - p.rx) < 0.002) p.rx = b.x;
         if (Math.abs(b.y - p.ry) < 0.002) p.ry = b.y;
+        if (p.rx === b.x && p.ry === b.y) p.tau = LERP_TAU;
       }
     }
 
@@ -370,6 +392,144 @@ export class Renderer {
     if (dragBox) this.drawBox(dragBox, view, now);
 
     this.drawEffects(view, now);
+  }
+
+  /**
+   * Effects for a game event. Handles the events that need board knowledge (springs, debris) and
+   * delegates the rest to `effectForEvent`. Also retimes position lerps for spring launches.
+   */
+  effectsForEvent(ev: GameEvent, state: GameState, now: number): Effect[] {
+    if (ev.type === 'springPushed') {
+      for (const id of ev.boxIds) {
+        const p = this.positions.get(id);
+        if (p) p.tau = PUSH_LERP_TAU;
+      }
+      return [{ kind: 'spring', t0: now, dur: SPRING_SNAP_MS, springId: ev.springId }];
+    }
+    if (ev.type === 'debrisDissolved') {
+      const out: Effect[] = [];
+      for (const sb of state.sandBoxes) {
+        const rc = this.regionCanvases.get(sb.region);
+        if (!rc || now - rc.colorSeen[ev.color & 31] > DEBRIS_SEEN_MS) continue;
+        const sparks: Spark[] = [];
+        const n = Math.min(28, 6 + sb.w * sb.h * 2);
+        for (let i = 0; i < n; i++) {
+          const [r, g, b] = grainRGBA(ev.color, Math.floor(Math.random() * SHADE_COUNT));
+          sparks.push({
+            x: sb.x + 0.1 + Math.random() * (sb.w - 0.2),
+            y: sb.y + 0.15 + Math.random() * (sb.h - 0.3),
+            vx: (Math.random() - 0.5) * 0.3,
+            vy: -0.4 - Math.random() * 0.8,
+            size: 0.05 + Math.random() * 0.05,
+            rgb: `rgb(${r},${g},${b})`,
+          });
+        }
+        out.push({ kind: 'debris', t0: now, dur: DEBRIS_MS, color: ev.color, x: sb.x, y: sb.y, w: sb.w, h: sb.h, sparks });
+      }
+      return out;
+    }
+    const fx = effectForEvent(ev, now);
+    return fx ? [fx] : [];
+  }
+
+  /** Spring tile: back plate, zigzag coil pointing in `dir`, cap and a faint chevron. */
+  private drawSpring(sp: SpringState, view: View, now: number): void {
+    const ctx = this.ctx;
+    const cs = this.cellSize;
+    const cx = this.originX + (sp.x + 0.5) * cs;
+    const cy = this.originY + (sp.y + 0.5) * cs;
+    let pulse = 0;
+    for (const e of view.effects) {
+      if (e.kind !== 'spring' || e.springId !== sp.id) continue;
+      const t = (now - e.t0) / e.dur;
+      if (t >= 0 && t <= 1) pulse = Math.max(pulse, Math.sin(Math.PI * t));
+    }
+
+    // Fixed tile base.
+    const inset = cs * 0.06;
+    const tile = roundRectPath(cx - cs / 2 + inset, cy - cs / 2 + inset, cs - inset * 2, cs - inset * 2, cs * 0.14);
+    ctx.fillStyle = 'rgba(255,255,255,0.035)';
+    ctx.fill(tile);
+    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+    ctx.lineWidth = Math.max(1, cs * 0.025);
+    ctx.stroke(tile);
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(DIR_ANGLE[sp.dir]);
+    const s = 1 + 0.12 * pulse;
+    ctx.scale(s, s);
+    // Local frame: push direction is -y ("up"); the plate sits at +y.
+    const loaded = sp.loaded;
+    const metal = loaded ? '#e6ebf4' : '#aab3c4';
+
+    // Back plate with an engraved chevron pointing in the push direction.
+    const plateY = cs * 0.25;
+    const plateH = cs * 0.15;
+    const g = ctx.createLinearGradient(0, plateY, 0, plateY + plateH);
+    g.addColorStop(0, '#a3abbd');
+    g.addColorStop(1, '#5d6476');
+    ctx.fillStyle = g;
+    ctx.fill(roundRectPath(-cs * 0.36, plateY, cs * 0.72, plateH, cs * 0.04));
+    ctx.beginPath();
+    ctx.moveTo(-cs * 0.07, plateY + plateH * 0.72);
+    ctx.lineTo(0, plateY + plateH * 0.28);
+    ctx.lineTo(cs * 0.07, plateY + plateH * 0.72);
+    ctx.strokeStyle = loaded ? '#7a5a10' : '#3c4252';
+    ctx.lineWidth = Math.max(1.2, cs * 0.03);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+
+    // Coil: relaxed reaches near the far edge, loaded is compressed toward the plate.
+    const endY = loaded ? -cs * 0.04 : -cs * 0.34;
+    const coils = loaded ? 4 : 5;
+    const amp = cs * 0.2;
+    ctx.beginPath();
+    ctx.moveTo(0, plateY);
+    for (let i = 1; i < coils * 2; i++) {
+      const y = plateY + ((endY - plateY) * i) / (coils * 2);
+      ctx.lineTo(i % 2 ? -amp : amp, y);
+    }
+    ctx.lineTo(0, endY);
+    if (loaded) {
+      ctx.shadowColor = 'rgba(245,200,76,0.45)';
+      ctx.shadowBlur = cs * 0.1;
+    }
+    ctx.strokeStyle = metal;
+    ctx.lineWidth = Math.max(1.5, cs * (loaded ? 0.035 : 0.045));
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Push cap.
+    ctx.fillStyle = metal;
+    ctx.fill(roundRectPath(-cs * 0.27, endY - cs * 0.07, cs * 0.54, cs * 0.08, cs * 0.03));
+    ctx.restore();
+  }
+
+  /** Faint chevron at the leading edge of a box that a spring is pushing. */
+  private drawPushIndicator(b: Box, px: number, py: number): void {
+    const dir = b.pushDir;
+    if (!dir) return;
+    const [dx, dy] = DIR_VEC[dir];
+    // Leading cell: furthest along the push direction (ties: the first one).
+    let lead = b.cells[0];
+    for (const c of b.cells) if (c.x * dx + c.y * dy > lead.x * dx + lead.y * dy) lead = c;
+    const cs = this.cellSize;
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.translate(px + (lead.x + 0.5 + dx * 0.3) * cs, py + (lead.y + 0.5 + dy * 0.3) * cs);
+    ctx.rotate(DIR_ANGLE[dir]);
+    ctx.beginPath();
+    ctx.moveTo(-cs * 0.1, cs * 0.04);
+    ctx.lineTo(0, -cs * 0.06);
+    ctx.lineTo(cs * 0.1, cs * 0.04);
+    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+    ctx.lineWidth = Math.max(1.5, cs * 0.04);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+    ctx.restore();
   }
 
   private drawBoard(): void {
@@ -413,7 +573,7 @@ export class Renderer {
       canvas.height = region.h;
       const ctx = canvas.getContext('2d')!;
       const img = ctx.createImageData(region.w, region.h);
-      rc = { canvas, ctx, img, u32: new Uint32Array(img.data.buffer), version: -1, count: -1 };
+      rc = { canvas, ctx, img, u32: new Uint32Array(img.data.buffer), version: -1, count: -1, colorSeen: new Float64Array(32) };
       this.regionCanvases.set(region, rc);
     }
     // Skip regions whose grains have not changed since the last upload.
@@ -425,8 +585,15 @@ export class Renderer {
     const u = rc.u32;
     const T = GRAIN_U32;
     const n = cells.length;
-    for (let i = 0; i < n; i++) u[i] = T[cells[i]];
+    let colors = 0;
+    for (let i = 0; i < n; i++) {
+      const v = cells[i];
+      u[i] = T[v];
+      colors |= 1 << (v & 31);
+    }
     rc.ctx.putImageData(rc.img, 0, 0);
+    const seenAt = performance.now();
+    for (let c = 1; c < 32; c++) if (colors & (1 << c)) rc.colorSeen[c] = seenAt;
     return rc;
   }
 
@@ -608,6 +775,8 @@ export class Renderer {
       }
     }
 
+    if (b.pushDir && b.frozen === 0) this.drawPushIndicator(b, px, py);
+
     // Thaw flash.
     for (const e of view.effects) {
       if (e.kind !== 'thaw' || e.boxId !== b.id) continue;
@@ -625,6 +794,30 @@ export class Renderer {
     }
   }
 
+  private drawDebris(e: Extract<Effect, { kind: 'debris' }>, age: number): void {
+    const ctx = this.ctx;
+    const cs = this.cellSize;
+    const t = age / e.dur;
+    const x = this.originX + e.x * cs;
+    const y = this.originY + e.y * cs;
+    ctx.save();
+    // Brief tinted glow over the glass.
+    ctx.globalAlpha = 0.16 * (1 - t);
+    ctx.fillStyle = colorHex(e.color);
+    ctx.fill(roundRectPath(x + cs * 0.04, y + cs * 0.04, e.w * cs - cs * 0.08, e.h * cs - cs * 0.08, cs * 0.12));
+    // Rising, twinkling motes.
+    const ts = age / 1000;
+    for (let i = 0; i < e.sparks.length; i++) {
+      const sp = e.sparks[i];
+      const tw = 0.55 + 0.45 * Math.sin(age * 0.03 + i * 1.7);
+      ctx.globalAlpha = Math.max(0, (1 - t) * tw);
+      const size = Math.max(this.dpr * 1.5, sp.size * cs * (1 - t * 0.5));
+      ctx.fillStyle = i % 4 === 0 ? '#ffffff' : sp.rgb;
+      ctx.fillRect(this.originX + (sp.x + sp.vx * ts) * cs - size / 2, this.originY + (sp.y + sp.vy * ts) * cs - size / 2, size, size);
+    }
+    ctx.restore();
+  }
+
   private drawEffects(view: View, now: number): void {
     const ctx = this.ctx;
     const cs = this.cellSize;
@@ -635,6 +828,10 @@ export class Renderer {
       const age = now - e.t0;
       if (age > e.dur) continue; // expired: drop
       effects[w++] = e;
+      if (e.kind === 'debris') {
+        this.drawDebris(e, age);
+        continue;
+      }
       if (e.kind !== 'pop') continue;
 
       // Pop: scale-up + fade of the shape.
