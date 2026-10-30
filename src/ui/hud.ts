@@ -1,6 +1,7 @@
 // DOM HUD: level title, hint, moves, controls, level picker (campaign + random) and win overlay.
 import type { LevelDef } from '../core/types';
 import { loadProgress, recordRandomSolve, saveProgress, type Progress } from './progress';
+import { chapterRanges } from './chapters';
 
 export interface HudHandlers {
   onRestart: () => void;
@@ -160,7 +161,7 @@ export class Hud {
     close.setAttribute('aria-label', 'Close');
     close.addEventListener('click', () => this.closePicker());
     phead.append(close);
-    this.pickerGrid = el('div', 'picker-grid');
+    this.pickerGrid = el('div', 'chapters');
 
     const rsec = el('section', 'random-section');
     const rhead = el('div', 'section-head');
@@ -426,18 +427,33 @@ export class Hud {
 
   openPicker(): void {
     this.pickerGrid.innerHTML = '';
-    this.levels.forEach((lv, i) => {
-      const done = this.isCompleted(lv.id);
-      const b = el('button', `level-tile${done ? ' done' : ''}${i === this.index ? ' current' : ''}`);
-      b.type = 'button';
-      b.title = lv.name;
-      b.innerHTML = `<span class="num">${i + 1}</span>${done ? `<span class="check">${ICONS.check}</span>` : ''}`;
-      b.addEventListener('click', () => {
-        this.closePicker();
-        this.handlers.onSelectLevel(i);
-      });
-      this.pickerGrid.append(b);
-    });
+    for (const ch of chapterRanges(this.levels.length)) {
+      const sec = el('div', 'chapter');
+      const head = el('div', 'chapter-head');
+      let done = 0;
+      for (let i = ch.start; i < ch.end; i++) if (this.isCompleted(this.levels[i].id)) done++;
+      head.append(
+        el('h4', 'chapter-title', `<span class="chapter-num">Chapter ${ch.number}</span> ${ch.chapter.title}`),
+        el('span', 'chapter-progress', `${done}/${ch.end - ch.start}`),
+      );
+      const grid = el('div', 'picker-grid');
+      for (let i = ch.start; i < ch.end; i++) {
+        const lv = this.levels[i];
+        const isDone = this.isCompleted(lv.id);
+        const b = el('button', `level-tile${isDone ? ' done' : ''}${i === this.index ? ' current' : ''}`);
+        b.type = 'button';
+        b.title = lv.name;
+        b.setAttribute('aria-label', `Level ${i + 1}: ${lv.name}${isDone ? ' (solved)' : ''}`);
+        b.innerHTML = `<span class="num">${i + 1}</span>${isDone ? `<span class="check">${ICONS.check}</span>` : ''}`;
+        b.addEventListener('click', () => {
+          this.closePicker();
+          this.handlers.onSelectLevel(i);
+        });
+        grid.append(b);
+      }
+      sec.append(head, grid);
+      this.pickerGrid.append(sec);
+    }
     this.seedError.textContent = '';
     this.renderDifficulty();
     this.picker.classList.remove('hidden');
