@@ -38,6 +38,7 @@ const hud = new Hud(app, {
     loadRandom(d, seed, gravity ?? gravityFor(hud.randomMode, seed), hero ?? hud.randomHero),
   onUndo: () => undo(),
   onSound: (on) => sfx.setEnabled(on),
+  onSoundDiag: () => toggleAudioDiag(),
   onHaptics: (on) => haptics.setEnabled(on),
   onHeroMove: (d) => heroKey(d),
 });
@@ -49,14 +50,47 @@ const renderer = new Renderer(hud.canvas);
 // ---------- Sound: never autoplays; the context is created/resumed on the first user gesture ----------
 const sfx = new Sfx(hud.progress.sound);
 const haptics = new Haptics(hud.progress.haptics);
+// iOS only counts touchend / click / keydown as activation for audio, so unlock on all of them,
+// synchronously, every time (cheap once running): this also recovers 'interrupted'/'suspended'.
 const unlockAudio = () => {
   haptics.activate();
   sfx.unlock();
-  if (sfx.state === 'running' || !sfx.isEnabled) {
-    for (const t of ['pointerdown', 'keydown', 'touchend']) window.removeEventListener(t, unlockAudio, true);
-  }
 };
-for (const t of ['pointerdown', 'keydown', 'touchend']) window.addEventListener(t, unlockAudio, { capture: true, passive: true });
+for (const t of ['touchend', 'click', 'keydown', 'pointerup', 'pointerdown']) {
+  window.addEventListener(t, unlockAudio, { capture: true, passive: true });
+}
+
+// ---------- Audio diagnostics overlay: ?audio=1, or hold the speaker button for 1 s ----------
+let diagEl: HTMLElement | null = null;
+let diagTimer = 0;
+function toggleAudioDiag(show = !diagEl): void {
+  if (!show) {
+    window.clearInterval(diagTimer);
+    diagEl?.remove();
+    diagEl = null;
+    return;
+  }
+  if (diagEl) return;
+  const el = document.createElement('div');
+  el.className = 'audio-diag';
+  el.setAttribute('role', 'status');
+  el.title = 'Tap to close';
+  el.addEventListener('click', () => toggleAudioDiag(false));
+  document.body.append(el);
+  diagEl = el;
+  const paint = () => {
+    const d = sfx.state();
+    el.textContent =
+      `audio  ${d.enabled ? 'on' : 'MUTED'}${d.supported ? '' : ' (no Web Audio)'}\n` +
+      `context  ${d.context}  ${d.sampleRate ? d.sampleRate + ' Hz' : ''}${d.createdRate && d.createdRate !== d.sampleRate ? ' (was ' + d.createdRate + ')' : ''}\n` +
+      `silent <audio>  ${d.silentElement}\n` +
+      `unlocks ${d.unlocks}  resumes ${d.resumes}  recreated ${d.recreated}\n` +
+      `last error  ${d.lastError || '-'}`;
+  };
+  paint();
+  diagTimer = window.setInterval(paint, 400);
+}
+if (new URLSearchParams(location.search).get('audio') === '1') toggleAudioDiag(true);
 let flowThisFrame = 0;
 let popsThisFrame = 0;
 let heroFoot: 0 | 1 = 0;

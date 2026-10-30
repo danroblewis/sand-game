@@ -163,6 +163,48 @@ export const SYNTHS: Record<SoundName, Synth> = {
 
 type Ctor = typeof AudioContext;
 
+/** Diagnostics snapshot (window.__game.sfx.state()). */
+export interface SfxDiag {
+  enabled: boolean;
+  supported: boolean;
+  context: string; // 'none' | 'running' | 'suspended' | 'interrupted' | 'closed'
+  sampleRate: number;
+  createdRate: number;
+  silentElement: string; // 'none' | 'playing' | 'paused' | 'blocked'
+  unlocks: number;
+  resumes: number;
+  recreated: number;
+  lastError: string;
+}
+
+/** A tiny silent 8-bit mono WAV (0.5 s), built at runtime: no asset. */
+function silentWavUri(): string {
+  const rate = 8000;
+  const n = rate / 2;
+  const b = new Uint8Array(44 + n);
+  const v = new DataView(b.buffer);
+  const str = (o: number, t: string) => {
+    for (let i = 0; i < t.length; i++) b[o + i] = t.charCodeAt(i);
+  };
+  str(0, 'RIFF');
+  v.setUint32(4, 36 + n, true);
+  str(8, 'WAVE');
+  str(12, 'fmt ');
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); // PCM
+  v.setUint16(22, 1, true); // mono
+  v.setUint32(24, rate, true);
+  v.setUint32(28, rate, true); // byte rate
+  v.setUint16(32, 1, true); // block align
+  v.setUint16(34, 8, true); // bits
+  str(36, 'data');
+  v.setUint32(40, n, true);
+  b.fill(128, 44); // 8-bit silence
+  let bin = '';
+  for (let i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
+  return 'data:audio/wav;base64,' + btoa(bin);
+}
+
 export class Sfx {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
@@ -174,74 +216,192 @@ export class Sfx {
   private hissFilter: BiquadFilterNode | null = null;
   private flowEnv = 0;
   private lastHissSet = 0;
+  // iOS robustness
+  private silent: HTMLAudioElement | null = null;
+  private silentState: SfxDiag['silentElement'] = 'none';
+  private createdRate = 0;
+  private lastResumeTry = 0;
+  private diag = { unlocks: 0, resumes: 0, recreated: 0, lastError: '' };
 
   constructor(enabled: boolean) {
     this.enabled = enabled;
+    if (typeof window !== 'undefined') {
+      // Come back from background / interruptions (calls, Siri, other apps).
+      const wake = () => this.resumeIfNeeded();
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) wake();
+      });
+      window.addEventListener('focus', wake);
+      window.addEventListener('pageshow', wake);
+    }
   }
 
   get isEnabled(): boolean {
     return this.enabled;
   }
 
-  /** AudioContext state for debugging ('none' until the first gesture or if unsupported). */
-  get state(): string {
+  /** AudioContext state ('none' until the first gesture or if unsupported). */
+  get ctxState(): string {
     return this.ctx ? this.ctx.state : 'none';
   }
 
-  /** Call from a user gesture: creates/resumes the context (iOS needs a sound started in the gesture). */
+  /** Diagnostics for the overlay / debug handle. */
+  state(): SfxDiag {
+    const w = window as unknown as { AudioContext?: Ctor; webkitAudioContext?: Ctor };
+    return {
+      enabled: this.enabled,
+      supported: !!(w.AudioContext ?? w.webkitAudioContext),
+      context: this.ctxState,
+      sampleRate: this.ctx ? this.ctx.sampleRate : 0,
+      createdRate: this.createdRate,
+      silentElement: this.silent ? (this.silent.paused ? (this.silentState === 'blocked' ? 'blocked' : 'paused') : 'playing') : 'none',
+      unlocks: this.diag.unlocks,
+      resumes: this.diag.resumes,
+      recreated: this.diag.recreated,
+      lastError: this.diag.lastError,
+    };
+  }
+
+  private err(where: string, e: unknown): void {
+    this.diag.lastError = `${where}: ${e instanceof Error ? e.name + ' ' + e.message : String(e)}`;
+  }
+
+  /**
+   * Call synchronously from a user gesture (touchend / click / keydown / pointerup). iOS only
+   * counts those as activation for audio. Creates the context if needed, resumes it, plays a
+   * silent buffer, and starts the silent <audio> loop that puts the page in the "playback" audio
+   * session (so Web Audio plays even with the ringer switch on silent). Cheap when already running.
+   */
   unlock(): void {
     if (!this.enabled) return;
     try {
-      if (!this.ctx) {
-        const w = window as unknown as { AudioContext?: Ctor; webkitAudioContext?: Ctor };
-        const C = w.AudioContext ?? w.webkitAudioContext;
-        if (!C) return;
-        const ctx = new C();
-        this.ctx = ctx;
-        this.noise = makeNoise(ctx, 1);
-        const comp = ctx.createDynamicsCompressor();
-        comp.threshold.value = -10;
-        comp.knee.value = 8;
-        comp.ratio.value = 4;
-        comp.attack.value = 0.003;
-        comp.release.value = 0.15;
-        this.master = ctx.createGain();
-        this.master.gain.value = MASTER_GAIN;
-        this.master.connect(comp).connect(ctx.destination);
-        // Sand hiss: looping noise -> band-pass -> gain (0 until sand flows).
-        const src = ctx.createBufferSource();
-        src.buffer = this.noise;
-        src.loop = true;
-        this.hissFilter = ctx.createBiquadFilter();
-        this.hissFilter.type = 'bandpass';
-        this.hissFilter.frequency.value = 2200;
-        this.hissFilter.Q.value = 0.9;
-        this.hissGain = ctx.createGain();
-        this.hissGain.gain.value = 0;
-        src.connect(this.hissFilter).connect(this.hissGain).connect(this.master);
-        src.start();
-        // iOS: play a silent buffer inside the gesture to unlock output.
+      // iOS quirk: the hardware rate can change after an interruption; rebuild the graph lazily.
+      if (this.ctx && this.createdRate && this.ctx.sampleRate !== this.createdRate) this.teardown('sampleRate changed');
+      if (!this.ctx) this.build();
+      const ctx = this.ctx;
+      if (!ctx) return;
+      if (ctx.state !== 'running') {
+        this.diag.unlocks++;
         const s = ctx.createBufferSource();
         s.buffer = ctx.createBuffer(1, 1, ctx.sampleRate);
         s.connect(ctx.destination);
         s.start(0);
+        ctx.resume().catch((e) => this.err('resume', e));
       }
-      if (this.ctx.state !== 'running') void this.ctx.resume().catch(() => {});
+    } catch (e) {
+      this.err('unlock', e);
+    }
+    this.startSilent();
+  }
+
+  private build(): void {
+    const w = window as unknown as { AudioContext?: Ctor; webkitAudioContext?: Ctor };
+    const C = w.AudioContext ?? w.webkitAudioContext;
+    if (!C) return;
+    const ctx = new C();
+    this.ctx = ctx;
+    this.createdRate = ctx.sampleRate;
+    this.noise = makeNoise(ctx, 1);
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -10;
+    comp.knee.value = 8;
+    comp.ratio.value = 4;
+    comp.attack.value = 0.003;
+    comp.release.value = 0.15;
+    this.master = ctx.createGain();
+    this.master.gain.value = MASTER_GAIN;
+    this.master.connect(comp).connect(ctx.destination);
+    // Sand hiss: looping noise -> band-pass -> gain (0 until sand flows).
+    const src = ctx.createBufferSource();
+    src.buffer = this.noise;
+    src.loop = true;
+    this.hissFilter = ctx.createBiquadFilter();
+    this.hissFilter.type = 'bandpass';
+    this.hissFilter.frequency.value = 2200;
+    this.hissFilter.Q.value = 0.9;
+    this.hissGain = ctx.createGain();
+    this.hissGain.gain.value = 0;
+    src.connect(this.hissFilter).connect(this.hissGain).connect(this.master);
+    src.start();
+    ctx.addEventListener('statechange', () => {
+      // 'interrupted' (iOS) / 'suspended': try to come back (works once the page may play again).
+      if (this.enabled && ctx === this.ctx && ctx.state !== 'running' && ctx.state !== 'closed' && !document.hidden) {
+        this.resumeIfNeeded();
+      }
+    });
+  }
+
+  private teardown(reason: string): void {
+    this.diag.recreated++;
+    this.diag.lastError = `recreated: ${reason}`;
+    const old = this.ctx;
+    this.ctx = null;
+    this.master = this.hissGain = this.hissFilter = null;
+    this.noise = null;
+    this.voices = 0;
+    try {
+      void old?.close().catch(() => {});
     } catch {
-      this.ctx = null; // audio unavailable: stay silent
+      /* ignore */
+    }
+  }
+
+  /** Silent looping <audio>: switches iOS to the playback session (ignores the ringer switch). */
+  private startSilent(): void {
+    if (!this.enabled || typeof document === 'undefined') return;
+    try {
+      if (!this.silent) {
+        const a = document.createElement('audio');
+        a.setAttribute('playsinline', '');
+        a.setAttribute('webkit-playsinline', '');
+        a.setAttribute('x-webkit-airplay', 'deny');
+        a.preload = 'auto';
+        a.loop = true;
+        a.volume = 0.01;
+        a.src = silentWavUri();
+        this.silent = a;
+      }
+      if (this.silent.paused) {
+        const p = this.silent.play();
+        this.silentState = 'playing';
+        if (p && typeof p.catch === 'function') {
+          p.catch((e) => {
+            this.silentState = 'blocked';
+            this.err('silent <audio>', e);
+          });
+        }
+      }
+    } catch (e) {
+      this.silentState = 'blocked';
+      this.err('silent <audio>', e);
+    }
+  }
+
+  /** Resume a suspended/interrupted context (gestures, focus, visibility, statechange). */
+  resumeIfNeeded(): void {
+    const ctx = this.ctx;
+    if (!this.enabled || !ctx || ctx.state === 'running' || ctx.state === 'closed') return;
+    const now = performance.now();
+    if (now - this.lastResumeTry < 250) return; // avoid statechange loops
+    this.lastResumeTry = now;
+    this.diag.resumes++;
+    try {
+      ctx.resume().catch((e) => this.err('resume', e));
+    } catch (e) {
+      this.err('resume', e);
     }
   }
 
   setEnabled(on: boolean): void {
     this.enabled = on;
-    if (!this.ctx) {
-      if (on) this.unlock();
+    if (on) {
+      this.unlock(); // the toggle is a click: a valid gesture
       return;
     }
+    this.flowEnv = 0;
     try {
-      if (on) void this.ctx.resume().catch(() => {});
-      else {
-        this.flowEnv = 0;
+      this.silent?.pause();
+      if (this.ctx) {
         this.hissGain?.gain.setValueAtTime(0, this.ctx.currentTime);
         void this.ctx.suspend().catch(() => {});
       }
@@ -259,9 +419,9 @@ export class Sfx {
       const t = ctx.currentTime + 0.005 + (o.delay ?? 0);
       const end = SYNTHS[name](ctx, this.master, this.noise, t, o);
       this.voices++;
-      window.setTimeout(() => this.voices--, Math.max(0, (end - ctx.currentTime) * 1000) + 20);
-    } catch {
-      /* ignore */
+      window.setTimeout(() => (this.voices = Math.max(0, this.voices - 1)), Math.max(0, (end - ctx.currentTime) * 1000) + 20);
+    } catch (e) {
+      this.err('play', e);
     }
   }
 

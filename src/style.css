@@ -1148,3 +1148,21 @@ canvas.board {
     gap: 4px;
   }
 }
+
+/* Audio diagnostics (?audio=1 or hold the speaker button). */
+.audio-diag {
+  position: fixed;
+  left: max(8px, env(safe-area-inset-left));
+  bottom: max(8px, env(safe-area-inset-bottom));
+  z-index: 50;
+  max-width: calc(100vw - 16px);
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.82);
+  color: #b7f5b0;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  pointer-events: auto;
+  -webkit-user-select: text;
+  user-select: text;
+}

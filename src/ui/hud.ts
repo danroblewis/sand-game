@@ -20,6 +20,8 @@ export interface HudHandlers {
   onHeroMove?: (dir: Dir) => void;
   /** Sound on/off toggled. */
   onSound?: (on: boolean) => void;
+  /** Speaker button held for 1 s: audio diagnostics. */
+  onSoundDiag?: () => void;
   /** Vibration on/off toggled. */
   onHaptics?: (on: boolean) => void;
 }
@@ -162,7 +164,26 @@ export class Hud {
     moves.append(this.movesEl);
     this.soundBtn = el('button', 'btn-sound btn-mute');
     this.soundBtn.type = 'button';
+    // Hold 1 s for audio diagnostics (that press does not toggle).
+    let holdTimer = 0;
+    let held = false;
+    this.soundBtn.addEventListener('pointerdown', () => {
+      held = false;
+      window.clearTimeout(holdTimer);
+      holdTimer = window.setTimeout(() => {
+        held = true;
+        handlers.onSoundDiag?.();
+      }, 1000);
+    });
+    for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) {
+      this.soundBtn.addEventListener(ev, () => window.clearTimeout(holdTimer));
+    }
+    this.soundBtn.addEventListener('contextmenu', (e) => e.preventDefault());
     this.soundBtn.addEventListener('click', () => {
+      if (held) {
+        held = false;
+        return;
+      }
       this.progress.sound = !this.progress.sound;
       saveProgress(this.progress);
       this.renderSound();
