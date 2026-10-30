@@ -53,6 +53,7 @@ export function createGame(level: LevelDef, seed = 1): GameState {
     conveyors: (level.conveyors ?? []).map(buildConveyor),
     heldBoxId: null,
     boxGravity: level.boxGravity ?? false,
+    hero: level.hero ? { x: level.hero.x, y: level.hero.y, facing: 'right', falling: 0 } : null,
     walls: (level.walls ?? []).map((w) => ({ x: w.x, y: w.y })),
     completedCount: 0,
     moves: 0,
@@ -101,6 +102,17 @@ function debrisOf(state: GameState): Debris {
     debris.set(state, d);
   }
   return d;
+}
+
+/** Copy of the debris-dissolution state (for snapshots). */
+export function debrisSave(state: GameState): { active: number[]; finished: number[]; removed: number[] } {
+  const d = debrisOf(state);
+  return { active: d.active.slice(), finished: [...d.finished], removed: d.removed.slice() };
+}
+
+/** Restore a debrisSave() copy. */
+export function debrisLoad(state: GameState, saved: { active: number[]; finished: number[]; removed: number[] }): void {
+  debris.set(state, { active: saved.active.slice(), finished: new Set(saved.finished), removed: saved.removed.slice() });
 }
 
 /** Grains removed by debris dissolution so far, per color (index = ColorId). */

@@ -24,14 +24,19 @@ npm run dev      # http://localhost:5173
 - Walls are fixed. Some sand boxes can only be reached through a lane.
 - Chapter 2, Workshop, turns on gravity for boxes: they fall when you let go and stack. Only the
   box at the foot of a shaft touches the sand tray beside it, so the order you stack is the order
-  the colors drain. Pull a support out and everything above it drops.
+  the colors drain. Pull a support out and everything above it drops. Frozen boxes inside a stack
+  hold it until enough other boxes pop.
+- Chapter 3, Pusher, is Sokoban: you are a little character who walks and pushes boxes (arrows or
+  WASD, tap to walk, swipe, or the on-screen pad). Under gravity you fall and can climb one cell.
+  Z undoes a move.
 - Touching boxes of the same color count as one container: they pop together once all are full.
   Pull a full one away from its partners and it pops on its own.
 
 ## Endless mode
 
-Open **Levels** and use the **Random** section: pick a difficulty from 1 to 10, press
-**Play random** or **Daily**, or type a seed to replay or share a level. The URL hash
+Open **Levels** and use the **Random** section: pick a difficulty from 1 to 10, choose
+Floating, Gravity, or Mixed, turn Pusher on for Sokoban levels, then press **Play random** or
+**Daily**, or type a seed to replay or share a level. The URL hash
 (`#gen-7-48213`) reopens the same level. Every generated level is proven solvable by
 replaying a plan through the real physics before it is offered.
 

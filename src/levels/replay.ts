@@ -1,7 +1,7 @@
 // Replays a drag plan ("box#i -> (x,y)") through the real simulation. This is the proof that a
 // level is winnable: the abstract solver is only a heuristic now that sand obeys gravity.
-import type { Box, GameState, LevelDef } from '../core/types';
-import { canPlace, createGame, fallPlan, regionVersion, stepGame, tryMoveBox } from '../core';
+import type { Box, Dir, GameState, LevelDef } from '../core/types';
+import { canPlace, createGame, fallPlan, heroSupported, moveHero, regionVersion, stepGame, tryMoveBox } from '../core';
 import { STEPS_PER_SECOND } from '../core/constants';
 
 export interface ReplayOptions {
@@ -21,6 +21,8 @@ export interface ReplayResult {
   /** Total sim steps (60 per second). */
   steps: number;
   drags: number;
+  /** Hero levels: hero inputs (U/D/L/R) issued; 0 otherwise. */
+  inputs: number;
   /** Sim seconds each completed box took from the drag that preceded its completion. */
   fills: string[];
   /** Longest single settle after a drag, in sim steps. */
@@ -35,6 +37,25 @@ const STEP_RE = /^box#(\d+) -> \((-?\d+),(-?\d+)\)( &)?$/;
 
 /** Sim steps between a no-wait drag ("... &") and the next drag (0.5 s). */
 export const GRAB_STEPS = 30;
+
+/** Hero levels: each solution entry is a string of U/D/L/R inputs. */
+const HERO_RE = /^[UDLR]+$/;
+const HERO_DIR: Record<string, Dir> = { U: 'up', D: 'down', L: 'left', R: 'right' };
+
+/** Sim steps between two hero inputs in one entry (a quick but human pace; lets a pushed box
+ *  start falling or docking before the next input). */
+export const HERO_INPUT_STEPS = 6;
+
+/** Hero entry ("RRU") → directions, or null if it is not a valid hero entry. */
+export function parseHeroEntry(entry: string): Dir[] | null {
+  const t = entry.trim();
+  return HERO_RE.test(t) ? [...t].map((c) => HERO_DIR[c]) : null;
+}
+
+/** True when the hero (box gravity) has nothing right below it and would fall. */
+function heroCanFall(state: GameState): boolean {
+  return !!state.hero && state.boxGravity && !heroSupported(state);
+}
 
 export function parseStep(step: string): { box: number; x: number; y: number; noWait: boolean } | null {
   const m = STEP_RE.exec(step.trim());
@@ -70,6 +91,7 @@ function versionSum(state: GameState): number {
   // Box positions count as activity: a box riding a conveyor (one cell per few steps) or one just
   // carried into contact must not end the settle.
   for (const b of state.boxes) v += regionVersion(b.region) + b.region.count + (b.x + 1) * 7919 + (b.y + 1) * 104729;
+  if (state.hero) v += (state.hero.x + 1) * 15485863 + (state.hero.y + 1) * 32452843;
   return v;
 }
 
@@ -100,7 +122,7 @@ export function settle(state: GameState, quiet = 45, max = 3600): number {
     const v = versionSum(state);
     // a box still falling (box gravity) is activity too: a drag that drops a stack is not settled
     // until everything has landed
-    if (v === last && !beltBusy(state) && fallPlan(state).size === 0) {
+    if (v === last && !beltBusy(state) && fallPlan(state).size === 0 && !heroCanFall(state)) {
       if (++still >= quiet) break;
     } else {
       still = 0;
@@ -119,7 +141,43 @@ export function replayLevel(level: LevelDef, plan: string[], opts: ReplayOptions
   const fills: string[] = [];
   let why = '';
   let drags = 0;
+  let inputs = 0;
   for (const step of plan) {
+    if (state.won && state.hero) break;
+    if (state.hero) {
+      // Hero level: walk the inputs at a human pace, then settle once the entry is done.
+      const dirs = parseHeroEntry(step);
+      if (!dirs) {
+        why = `bad hero entry "${step}"`;
+        break;
+      }
+      drags++;
+      const before = state.boxes.filter((b) => b.state === 'active').map((b) => b.id);
+      const t = state.tick;
+      let s = 0;
+      for (let k = 0; k < dirs.length && !state.won; k++) {
+        if (!moveHero(state, dirs[k])) {
+          why = `${step}: input ${k + 1} (${step[k]}) blocked with the hero at (${state.hero.x},${state.hero.y})`;
+          break;
+        }
+        inputs++;
+        // a few steps per input, more while the hero is still falling (gravity levels)
+        for (let i = 0; (i < HERO_INPUT_STEPS || heroCanFall(state) || state.hero.falling > 0) && i < 600 && !state.won; i++) {
+          stepGame(state);
+          s++;
+        }
+      }
+      if (why) break;
+      const ss = settle(state, quiet, maxPer);
+      s += ss;
+      steps += s;
+      longest = Math.max(longest, ss);
+      for (const b of state.boxes)
+        if (before.includes(b.id) && b.state === 'removed')
+          fills.push(`#${b.id}${b.shape}:${((state.tick - t) / STEPS_PER_SECOND).toFixed(1)}s`);
+      opts.onDrag?.(step, state, s);
+      continue;
+    }
     const p = parseStep(step);
     if (!p || !state.boxes[p.box]) {
       why = `bad step "${step}"`;
@@ -161,7 +219,7 @@ export function replayLevel(level: LevelDef, plan: string[], opts: ReplayOptions
     opts.onDrag?.(step, state, s);
   }
   if (!why && !state.won) why = 'plan finished but level not won';
-  return { won: state.won && !why, why, steps, drags, fills, longestSettle: longest, state };
+  return { won: state.won && !why, why, steps, drags, inputs, fills, longestSettle: longest, state };
 }
 
 const CH = '?ROYGTBIPKNWC';

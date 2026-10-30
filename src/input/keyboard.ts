@@ -1,5 +1,5 @@
 // Keyboard controls: Tab cycles selection, arrows move, Esc deselects, R/N/[/] level control.
-import type { GameState } from '../core/types';
+import type { Dir, GameState } from '../core/types';
 import { movableBoxes, tryMoveBox } from '../core';
 import type { View } from '../render/renderer';
 
@@ -9,7 +9,16 @@ export interface KeyboardActions {
   prev: () => void;
   /** True when playing a generated level (N then means "new random level" even before winning). */
   isRandom?: () => boolean;
+  /** Hero levels: one hero move (arrows / WASD). */
+  heroMove?: (dir: Dir) => void;
+  /** Hero levels: undo the last hero move (Z / U). */
+  undo?: () => void;
 }
+
+const HERO_KEYS: Record<string, Dir> = {
+  ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down',
+  a: 'left', d: 'right', w: 'up', s: 'down', A: 'left', D: 'right', W: 'up', S: 'down',
+};
 
 export interface KeyboardDeps {
   getState: () => GameState;
@@ -26,6 +35,12 @@ let lastSelected: { id: number; x: number; y: number } | null = null;
  * the next movable box in tab order (after the old box's position, wrapping). Call once per frame.
  */
 export function fixSelection(state: GameState, view: View): void {
+  if (state.hero) {
+    // Hero levels: boxes are never selected (the hero pushes them).
+    view.selectedBoxId = null;
+    lastSelected = null;
+    return;
+  }
   if (view.selectedBoxId === null) {
     lastSelected = null;
     return;
@@ -82,6 +97,24 @@ export function attachKeyboard(deps: KeyboardDeps): () => void {
     const t = e.target as HTMLElement | null;
     if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
     const state = getState();
+
+    if (state.hero) {
+      const hd = HERO_KEYS[e.key];
+      if (hd) {
+        e.preventDefault();
+        actions.heroMove?.(hd);
+        return;
+      }
+      if (e.key === 'z' || e.key === 'Z' || e.key === 'u' || e.key === 'U') {
+        e.preventDefault();
+        actions.undo?.();
+        return;
+      }
+      if (e.key === 'Tab') {
+        e.preventDefault(); // no box selection in hero levels; keep focus on the game
+        return;
+      }
+    }
 
     if (e.key === 'Tab') {
       e.preventDefault();

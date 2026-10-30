@@ -62,6 +62,7 @@ export function attachPointer(deps: PointerDeps): () => void {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     if (drag) return; // ignore extra fingers
     const state = getState();
+    if (state.hero) return; // hero levels: boxes are pushed by the hero (see input/hero.ts)
     const { px, py } = local(e);
     const box = renderer.boxAtPixel(state, px, py, HIT_SLOP[e.pointerType] ?? 6);
     if (!box) {
@@ -83,7 +84,8 @@ export function attachPointer(deps: PointerDeps): () => void {
   const onMove = (e: PointerEvent) => {
     const { px, py } = local(e);
     if (!drag) {
-      if (e.pointerType === 'mouse') updateHover(px, py);
+      if (e.pointerType === 'mouse' && !getState().hero) updateHover(px, py);
+      else if (getState().hero) view.hoverBoxId = null;
       return;
     }
     if (e.pointerId !== drag.pointerId) return;

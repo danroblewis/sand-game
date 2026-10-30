@@ -328,6 +328,21 @@ interface S {
   fill: number[];
   sand: LayerStack[]; // per sand box
   done: number;
+  /** Hero position (hero levels; -1 otherwise). */
+  hx: number;
+  hy: number;
+}
+
+/** A hero macro-move: walk (free) to the cell behind a box, then one push input. */
+interface HeroMove {
+  /** Inputs (U/D/L/R): the walk, then the push. */
+  keys: string;
+  box: number;
+  dx: number;
+  dy: number;
+  /** Hero cell the push starts from. */
+  fx: number;
+  fy: number;
 }
 
 /** Openings between a box (shape cells at x, y) and each sand box it shares an edge with. */
@@ -387,6 +402,12 @@ function makeModel(level: LevelDef, model: ModelParams = DEFAULT_MODEL) {
   level.sandBoxes.forEach((sb, i) => {
     for (let y = sb.y; y < sb.y + sb.h; y++) for (let x = sb.x; x < sb.x + sb.w; x++) sbGrid[y * W + x] = i;
   });
+  // fixed obstacles: sand boxes and wall tiles
+  const fixed = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) if (sbGrid[i] >= 0) fixed[i] = 1;
+  for (const w of level.walls ?? []) if (w.x >= 0 && w.y >= 0 && w.x < W && w.y < H) fixed[w.y * W + w.x] = 1;
+  const gravity = !!level.boxGravity;
+  const bottom = cells.map((cs) => Math.max(...cs.map((c) => c.y)));
 
   const init: S = {
     xs: level.boxes.map((b) => b.x),
@@ -395,7 +416,10 @@ function makeModel(level: LevelDef, model: ModelParams = DEFAULT_MODEL) {
     fill: level.boxes.map(() => 0),
     sand: level.sandBoxes.map((sb) => makeStack(sb.layers)),
     done: 0,
+    hx: level.hero ? level.hero.x : -1,
+    hy: level.hero ? level.hero.y : -1,
   };
+  const hero = !!level.hero;
 
   const thawed = (s: S, i: number) => frozen[i] - s.done <= 0;
 
@@ -408,7 +432,54 @@ function makeModel(level: LevelDef, model: ModelParams = DEFAULT_MODEL) {
   }
 
   /** Settles all dockings. Returns '' or a reason the state is pruned ('conduit'). */
+  /** Box gravity: every live box (frozen too) that can move down falls, bottom-up so stacks fall
+   *  together, until all are supported. */
+  function fall(s: S): void {
+    const g = occupancy(s, -1);
+    const order = [];
+    for (let i = 0; i < nb; i++) if (s.alive[i]) order.push(i);
+    for (let moved = true; moved; ) {
+      moved = false;
+      // the hero falls too (after the boxes); boxes never fall into the hero's cell
+      if (hero && s.hy + 1 < H && !g[(s.hy + 1) * W + s.hx]) {
+        g[s.hy * W + s.hx] = 0;
+        s.hy++;
+        g[s.hy * W + s.hx] = 1;
+        moved = true;
+      }
+      order.sort((a, b) => s.ys[b] + bottom[b] - (s.ys[a] + bottom[a]) || a - b);
+      for (const i of order) {
+        let ok = true;
+        for (const c of cells[i]) {
+          const gx = s.xs[i] + c.x;
+          const gy = s.ys[i] + c.y + 1;
+          if (gy >= H) ok = false;
+          // a cell below that is another of this box's own cells is fine
+          else if (g[gy * W + gx] && !cells[i].some((o) => o.x === c.x && o.y === c.y + 1)) ok = false;
+          if (!ok) break;
+        }
+        if (!ok) continue;
+        for (const c of cells[i]) g[(s.ys[i] + c.y) * W + s.xs[i] + c.x] = 0;
+        s.ys[i]++;
+        for (const c of cells[i]) g[(s.ys[i] + c.y) * W + s.xs[i] + c.x] = 1;
+        moved = true;
+      }
+    }
+  }
+
+  /** Settles everything after a move: boxes fall (gravity), dockings drain, completed boxes pop
+   *  (which may drop the boxes above them onto new dockings), until nothing changes. */
   function settle(s: S): string {
+    for (;;) {
+      if (gravity) fall(s);
+      const before = s.done;
+      drainAll(s);
+      if (!gravity || s.done === before) break;
+    }
+    return conduit(s) ? 'conduit' : '';
+  }
+
+  function drainAll(s: S): void {
     let changed = true;
     while (changed) {
       changed = false;
@@ -432,7 +503,6 @@ function makeModel(level: LevelDef, model: ModelParams = DEFAULT_MODEL) {
         }
       }
     }
-    return conduit(s) ? 'conduit' : '';
   }
 
   /** Two live, thawed same-color boxes share an edge while one of them holds sand (the real sim
@@ -454,16 +524,137 @@ function makeModel(level: LevelDef, model: ModelParams = DEFAULT_MODEL) {
   const key = (s: S) => {
     let k = '';
     for (let i = 0; i < nb; i++) k += s.alive[i] ? String.fromCharCode(48 + s.xs[i] * 16 + s.ys[i]) + s.fill[i] + ',' : '-';
-    return k + '|' + s.sand.map((a) => a.join(',')).join('/');
+    k += '|' + s.sand.map((a) => a.join(',')).join('/');
+    if (!hero) return k;
+    // floating hero levels: the hero's whole walkable region is one state (classic Sokoban
+    // normalisation); under gravity walking is one-way (falls), so the exact cell counts
+    if (gravity) return k + '@' + (s.hy * W + s.hx);
+    const reach = heroWalk(s);
+    let m = Infinity;
+    for (const c of reach.keys()) if (c < m) m = c;
+    return k + '@' + m;
   };
 
+  /** Cells the hero can occupy (no box is pushed on the way) → the inputs that get it there. */
+  function heroWalk(s: S): Map<number, string> {
+    const g = occupancy(s, -1);
+    g[s.hy * W + s.hx] = 0;
+    const out = new Map<number, string>([[s.hy * W + s.hx, '']]);
+    const q = [s.hy * W + s.hx];
+    const dirs: [number, number, string][] = gravity
+      ? [
+          [-1, 0, 'L'],
+          [1, 0, 'R'],
+        ]
+      : [
+          [-1, 0, 'L'],
+          [1, 0, 'R'],
+          [0, -1, 'U'],
+          [0, 1, 'D'],
+        ];
+    const free = (x: number, y: number) => x >= 0 && y >= 0 && x < W && y < H && !g[y * W + x];
+    for (let qi = 0; qi < q.length; qi++) {
+      const c = q[qi];
+      const x = c % W;
+      const y = (c - x) / W;
+      const path = out.get(c)!;
+      for (const [dx, dy, ch] of dirs) {
+        const tx = x + dx;
+        let ty = y + dy;
+        if (tx < 0 || ty < 0 || tx >= W || ty >= H) continue;
+        if (free(tx, ty)) {
+          if (gravity) while (free(tx, ty + 1)) ty++; // walks off an edge: falls
+        } else {
+          // into a box that would move: that is a push, not a walk
+          const b = boxAt(s, tx, ty);
+          if (b >= 0 && thawed(s, b) && canShift(s, b, dx, dy)) continue;
+          // gravity: climb one cell onto the obstacle
+          if (!(gravity && free(tx, ty - 1) && free(x, y - 1))) continue;
+          ty--;
+        }
+        const k = ty * W + tx;
+        if (out.has(k)) continue;
+        out.set(k, path + ch);
+        q.push(k);
+      }
+    }
+    return out;
+  }
+
+  /** Index of the live box covering (x, y), or -1. */
+  function boxAt(s: S, x: number, y: number): number {
+    for (let i = 0; i < nb; i++) {
+      if (!s.alive[i]) continue;
+      for (const c of cells[i]) if (s.xs[i] + c.x === x && s.ys[i] + c.y === y) return i;
+    }
+    return -1;
+  }
+
+  /** Box i can move one cell by (dx, dy) (the hero's own cell does not count). */
+  function canShift(s: S, i: number, dx: number, dy: number): boolean {
+    const g = occupancy(s, i);
+    if (s.hx >= 0) g[s.hy * W + s.hx] = 0;
+    for (const c of cells[i]) {
+      const gx = s.xs[i] + c.x + dx;
+      const gy = s.ys[i] + c.y + dy;
+      if (gx < 0 || gy < 0 || gx >= W || gy >= H || g[gy * W + gx]) return false;
+    }
+    return true;
+  }
+
+  /** All push macro-moves from state s. */
+  function heroMoves(s: S): HeroMove[] {
+    const walk = heroWalk(s);
+    const out: HeroMove[] = [];
+    const dirs: [number, number, string][] = gravity
+      ? [
+          [-1, 0, 'L'],
+          [1, 0, 'R'],
+        ]
+      : [
+          [-1, 0, 'L'],
+          [1, 0, 'R'],
+          [0, -1, 'U'],
+          [0, 1, 'D'],
+        ];
+    for (const [c, path] of walk) {
+      const x = c % W;
+      const y = (c - x) / W;
+      for (const [dx, dy, ch] of dirs) {
+        const b = boxAt(s, x + dx, y + dy);
+        if (b < 0 || !thawed(s, b)) continue;
+        const t = { ...s, hx: x, hy: y };
+        if (!canShift(t, b, dx, dy)) continue;
+        out.push({ keys: path + ch, box: b, dx, dy, fx: x, fy: y });
+      }
+    }
+    // gravity: the hero holds up whatever stands on it; stepping away (one input) lets it drop
+    if (gravity && s.hy > 0 && boxAt(s, s.hx, s.hy - 1) >= 0)
+      for (const [c, path] of walk)
+        if (path.length === 1) out.push({ keys: path, box: -1, dx: 0, dy: 0, fx: c % W, fy: (c - (c % W)) / W });
+    return out;
+  }
+
+  /** Applies a push (box moves, hero steps into its old cell); call settle() after. */
+  function applyPush(s: S, m: HeroMove): void {
+    if (m.box < 0) {
+      s.hx = m.fx;
+      s.hy = m.fy;
+      return;
+    }
+    s.xs[m.box] += m.dx;
+    s.ys[m.box] += m.dy;
+    s.hx = m.fx + m.dx;
+    s.hy = m.fy + m.dy;
+  }
+
   function occupancy(s: S, skip: number): Uint8Array {
-    const g = new Uint8Array(W * H);
-    for (let i = 0; i < W * H; i++) if (sbGrid[i] >= 0) g[i] = 1;
+    const g = fixed.slice();
     for (let i = 0; i < nb; i++) {
       if (!s.alive[i] || i === skip) continue;
       for (const c of cells[i]) g[(s.ys[i] + c.y) * W + s.xs[i] + c.x] = 1;
     }
+    if (hero && s.hx >= 0) g[s.hy * W + s.hx] = 1;
     return g;
   }
 
@@ -493,7 +684,49 @@ function makeModel(level: LevelDef, model: ModelParams = DEFAULT_MODEL) {
         out.push([nx, ny]);
       }
     }
-    return out;
+    if (!gravity) return out;
+    // under gravity the box is carried along any free path and released: it ends where it lands
+    const rest = new Set<number>();
+    const useful: [number, number][] = [];
+    const park: [number, number, number][] = [];
+    const fixedFits = (x: number, y: number) => {
+      for (const c of cells[i]) {
+        const gx = x + c.x;
+        const gy = y + c.y;
+        if (gx < 0 || gy < 0 || gx >= W || gy >= H || fixed[gy * W + gx]) return false;
+      }
+      return true;
+    };
+    for (const [x0, y0] of out) {
+      let y = y0;
+      while (fits(x0, y + 1)) y++;
+      const k = y * W + x0;
+      if (rest.has(k) || (x0 === s.xs[i] && y === s.ys[i])) continue;
+      rest.add(k);
+      // useful: drains now; lands on another box (a stack: it drops on when that one goes); or
+      // would fall into contact with its own sand once the boxes below it are gone
+      let onBox = false;
+      for (const c of cells[i]) {
+        const gy = y + c.y + 1;
+        if (gy < H && g[gy * W + x0 + c.x] && !fixed[gy * W + x0 + c.x]) onBox = true;
+      }
+      let yf = y;
+      while (fixedFits(x0, yf + 1)) yf++;
+      if (touchesOwnSand(s, i, x0, y) || onBox || touchesOwnSand(s, i, x0, yf)) useful.push([x0, y]);
+      else {
+        // parking: keep a few spots far from every sand box (they cannot interfere)
+        let dmin = 99;
+        for (const sb of level.sandBoxes) {
+          const dx = Math.max(sb.x - x0, 0, x0 - (sb.x + sb.w - 1));
+          const dy = Math.max(sb.y - y, 0, y - (sb.y + sb.h - 1));
+          dmin = Math.min(dmin, dx + dy);
+        }
+        park.push([x0, y, dmin]);
+      }
+    }
+    park.sort((a, b) => b[2] - a[2] || a[1] - b[1] || a[0] - b[0]);
+    for (const [x, y] of park.slice(0, 3)) useful.push([x, y]);
+    return useful;
   }
 
   const clone = (s: S): S => ({
@@ -503,6 +736,8 @@ function makeModel(level: LevelDef, model: ModelParams = DEFAULT_MODEL) {
     fill: s.fill.slice(),
     sand: s.sand.map((a) => a.slice()),
     done: s.done,
+    hx: s.hx,
+    hy: s.hy,
   });
 
   const initRisk = settle(init);
@@ -517,7 +752,81 @@ function makeModel(level: LevelDef, model: ModelParams = DEFAULT_MODEL) {
     return openingsAt(i, x, y).some(([k]) => stackHas(s.sand[k], color[i]));
   }
 
-  return { init, initRisk, nb, settle, key, reachable, clone, thawed, touchesOwnSand, dockedToOwnColor, openingsAt };
+  /** True if box i at (x,y) shares an edge with any sand box. */
+  function dockedAnySand(i: number, x: number, y: number): boolean {
+    return openingsAt(i, x, y).length > 0;
+  }
+
+  /** Box i is blocked by fixed cells (edge, wall, sand box) on a horizontal and a vertical side. */
+  function cornered(s: S, i: number): boolean {
+    const blocked = (dx: number, dy: number) =>
+      cells[i].some((c) => {
+        const x = s.xs[i] + c.x + dx;
+        const y = s.ys[i] + c.y + dy;
+        return x < 0 || y < 0 || x >= W || y >= H || fixed[y * W + x] === 1;
+      });
+    return (blocked(-1, 0) || blocked(1, 0)) && (blocked(0, -1) || blocked(0, 1));
+  }
+
+  return { init, initRisk, nb, settle, key, reachable, clone, thawed, touchesOwnSand, dockedToOwnColor, openingsAt, dockedAnySand, hero, heroMoves, applyPush, cornered, gravity };
+}
+
+/** One step of a scripted plan (box gravity): `dock` = carry the box to where it drains its own
+ *  sand right away (e.g. a ledge under a sand box); `shaft` = drop it down column `x` (it lands on
+ *  whatever is there); `park` = put it out of the way. */
+export type Intent = { box: number; kind: 'dock' | 'park' } | { box: number; kind: 'shaft'; x: number };
+
+/** Turns intents into a concrete plan in the abstract model (each target is one the box can
+ *  reach; the model settles after every move). Returns null if an intent cannot be carried out
+ *  (box gone or frozen, no such target). The plan is a candidate only: replay it in physics. */
+export function scriptedPlan(level: LevelDef, intents: Intent[], model: ModelParams = DEFAULT_MODEL): string[] | null {
+  const m = makeModel(level, model);
+  const s = m.clone(m.init);
+  const path: string[] = [];
+  for (const it of intents) {
+    const i = it.box;
+    if (!s.alive[i]) continue; // already done (fed by a drop)
+    if (!m.thawed(s, i)) return null;
+    const targets = m.reachable(s, i);
+    let t: [number, number] | undefined;
+    if (it.kind === 'dock') {
+      // the docking that gets the most done (e.g. full coverage under a sand box)
+      let best = -1;
+      for (const [x, y] of targets) {
+        if (!m.touchesOwnSand(s, i, x, y)) continue;
+        const c = m.clone(s);
+        c.xs[i] = x;
+        c.ys[i] = y;
+        if (m.settle(c)) continue;
+        const score = c.done * 1e6 + (c.alive[i] ? c.fill[i] : 1e5);
+        if (score > best) {
+          best = score;
+          t = [x, y];
+        }
+      }
+    }
+    else if (it.kind === 'shaft') t = targets.filter(([x]) => x === it.x).sort((a, b) => b[1] - a[1])[0];
+    else {
+      // the free spot farthest from every sand box
+      let best = -1;
+      for (const [x, y] of targets) {
+        if (m.dockedAnySand(i, x, y)) continue;
+        let dmin = 99;
+        for (const sb of level.sandBoxes)
+          dmin = Math.min(dmin, Math.max(sb.x - x, 0, x - (sb.x + sb.w - 1)) + Math.max(sb.y - y, 0, y - (sb.y + sb.h - 1)));
+        if (dmin > best) {
+          best = dmin;
+          t = [x, y];
+        }
+      }
+    }
+    if (!t) return null;
+    s.xs[i] = t[0];
+    s.ys[i] = t[1];
+    if (m.settle(s)) return null;
+    path.push(`box#${i} -> (${t[0]},${t[1]})`);
+  }
+  return s.done === m.nb ? path : null;
 }
 
 /** Abstract-model snapshot passed to modelTrace's callback (fill in grains). */
@@ -585,7 +894,8 @@ export function solveMany(level: LevelDef, opts: SolveOptions = {}): SolveResult
 }
 
 function search(level: LevelDef, maxStates: number, bestFirst: boolean, opts: SolveOptions): SolveResult[] {
-  const { init, initRisk, nb, settle, key, reachable, clone, thawed, openingsAt } = makeModel(level, opts.model);
+  const { init, initRisk, nb, settle, key, reachable, clone, thawed, openingsAt, hero, heroMoves, applyPush, cornered, touchesOwnSand, gravity } =
+    makeModel(level, opts.model);
   const unsolved = (optimal: boolean, explored: number): SolveResult => ({ solved: false, moves: -1, optimal, explored, path: [] });
   if (initRisk) return [unsolved(true, 0)];
   const want = Math.max(1, opts.solutions ?? 1);
@@ -668,13 +978,28 @@ function search(level: LevelDef, maxStates: number, bestFirst: boolean, opts: So
       heap.splice(0, head);
       head = 0;
     }
-    for (let i = 0; i < nb; i++) {
-      if (!n.s.alive[i] || !thawed(n.s, i)) continue;
-      for (const [x, y] of reachable(n.s, i)) {
+    // a move: a drag of box i to (x, y), or (hero levels) a push macro-move
+    const moves: { i: number; x: number; y: number; hm?: HeroMove }[] = [];
+    if (hero)
+      for (const hm of heroMoves(n.s))
+        moves.push(hm.box < 0 ? { i: 0, x: -1, y: -1, hm } : { i: hm.box, x: n.s.xs[hm.box] + hm.dx, y: n.s.ys[hm.box] + hm.dy, hm });
+    else
+      for (let i = 0; i < nb; i++) {
+        if (!n.s.alive[i] || !thawed(n.s, i)) continue;
+        for (const [x, y] of reachable(n.s, i)) moves.push({ i, x, y });
+      }
+    for (const { i, x, y, hm } of moves) {
+      {
         const s = clone(n.s);
-        s.xs[i] = x;
-        s.ys[i] = y;
+        if (hm) applyPush(s, hm);
+        else {
+          s.xs[i] = x;
+          s.ys[i] = y;
+        }
         if (settle(s)) continue; // pruned (conduit)
+        // Sokoban dead corner (floating hero levels): a pushed box wedged against fixed cells on
+        // a horizontal and a vertical side can never move again; unless it drains there, prune
+        if (hm && hm.box >= 0 && !gravity && s.alive[hm.box] && cornered(s, hm.box) && !touchesOwnSand(s, hm.box, s.xs[hm.box], s.ys[hm.box])) continue;
         const k = key(s);
         if (seen.has(k)) continue;
         seen.add(k);
@@ -689,14 +1014,14 @@ function search(level: LevelDef, maxStates: number, bestFirst: boolean, opts: So
         // weighted best-first: sand still to collect dominates; moves that collect nothing
         // (parking a box out of the way) cost a little extra
         const remaining = (capTotal - filled) / U;
-        const pri = (nb - s.done) * 2 + remaining * 3 + depth + (got > 0 ? 0 : 1) + time / 30 + noise();
+        const pri = (nb - s.done) * 2 + remaining * 3 + depth + (got > 0 ? 0 : 1) + time / 30 + (hm ? hm.keys.length * 0.03 : 0) + noise();
         const dock =
           i +
           ':' +
           openingsAt(i, x, y)
             .map(([k, ops]) => k + ops.map((o) => (o.kind === 'side' ? 's' + o.lo : o.kind[0])).join(''))
             .join(',');
-        const child: Node = { s, parent: n, step: `box#${i} -> (${x},${y})`, dock, depth, pri, time };
+        const child: Node = { s, parent: n, step: hm ? hm.keys : `box#${i} -> (${x},${y})`, dock: hm ? dock + '>' + x + ',' + y : dock, depth, pri, time };
         if (s.done === nb) {
           if (finish(child)) return found;
           continue;
@@ -722,6 +1047,7 @@ const capOf = (level: LevelDef, j: number) => SHAPES[level.boxes[j].shape].lengt
  *  never moving anything out of the way. Levels this solves are "easy"; harder levels should
  *  defeat it. Heuristic (abstract model). Returns the number of drags, or -1 if it gets stuck. */
 export function greedySolve(level: LevelDef, model: ModelParams = DEFAULT_MODEL): number {
+  if (level.hero) return -1; // boxes are pushed, not dragged: the naive drag player does not apply
   const m = makeModel(level, model);
   const s = m.clone(m.init);
   let moves = 0;

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { LevelDef } from '../src/core/types';
 import { LEVELS, getLevel } from '../src/levels/index';
 import { levelCapacityByColor, levelSandByColor, validateLevel, validateLevels } from '../src/levels/validate';
-import { parseStep, settle } from '../src/levels/replay';
+import { parseHeroEntry, parseStep, settle } from '../src/levels/replay';
 import { createGame } from '../src/core';
 
 const base = (): LevelDef => ({
@@ -18,19 +18,35 @@ const base = (): LevelDef => ({
 });
 
 describe('LEVELS', () => {
-  it('has 14-30 levels', () => {
+  it('has 14-50 levels', () => {
     expect(LEVELS.length).toBeGreaterThanOrEqual(14);
-    expect(LEVELS.length).toBeLessThanOrEqual(30);
+    expect(LEVELS.length).toBeLessThanOrEqual(50);
   });
 
   it('chapter 1 (levels 1-18) has no box gravity; chapter 2 (Workshop) is all box gravity', () => {
     LEVELS.slice(0, 18).forEach((l) => expect(l.boxGravity ?? false, l.id).toBe(false));
-    const ch2 = LEVELS.slice(18);
-    expect(ch2.length).toBeGreaterThanOrEqual(8);
+    const ch2 = LEVELS.slice(18, 27);
+    expect(ch2.length).toBe(9);
     ch2.forEach((l) => {
       expect(l.boxGravity, l.id).toBe(true);
       expect(l.conveyors ?? [], `${l.id}: no belts in gravity levels`).toEqual([]);
+      expect(l.hero, `${l.id}: no hero in Workshop`).toBeUndefined();
     });
+  });
+
+  it('chapter 3 (Pusher, levels 28+) all have a hero, no belts; earlier levels have none', () => {
+    LEVELS.slice(0, 27).forEach((l) => expect(l.hero, l.id).toBeUndefined());
+    const ch3 = LEVELS.slice(27);
+    expect(ch3.length).toBeGreaterThanOrEqual(14);
+    expect(ch3.length).toBeLessThanOrEqual(16);
+    ch3.forEach((l) => {
+      expect(l.hero, l.id).toBeDefined();
+      expect(l.conveyors ?? [], `${l.id}: no belts in hero levels`).toEqual([]);
+    });
+    // floating Sokoban first, then platform (gravity) Sokoban
+    const g = ch3.map((l) => !!l.boxGravity);
+    expect(g.indexOf(true)).toBeGreaterThanOrEqual(4);
+    expect(g.slice(g.indexOf(true)).every((x) => x)).toBe(true);
   });
 
   it('has unique ids and names', () => {
@@ -68,6 +84,11 @@ describe('LEVELS', () => {
 
       it('has an authored solution that references real boxes', () => {
         expect(level.solution?.length, 'missing solution').toBeGreaterThan(0);
+        if (level.hero) {
+          // hero levels: every entry is a string of U/D/L/R inputs
+          for (const step of level.solution!) expect(parseHeroEntry(step), `bad hero entry ${step}`).not.toBeNull();
+          return;
+        }
         for (const step of level.solution!) {
           const p = parseStep(step);
           expect(p, `bad step ${step}`).not.toBeNull();
@@ -248,6 +269,31 @@ describe('validateLevel', () => {
     expect(validateLevel(tall).join('\n')).toMatch(/box#0.*does not start resting/);
     // without box gravity floating boxes are fine
     expect(validateLevel({ ...floating, boxGravity: false })).toEqual([]);
+  });
+
+  it('hero: starts in bounds on a free cell, resting with box gravity', () => {
+    const ok: LevelDef = {
+      ...base(),
+      walls: [{ x: 5, y: 0 }],
+      boxes: [
+        { shape: '1x1', x: 0, y: 7, color: 1 },
+        { shape: '2x1', x: 3, y: 7, color: 6 },
+      ],
+      hero: { x: 1, y: 7 },
+    };
+    expect(validateLevel(ok)).toEqual([]);
+    expect(validateLevel({ ...ok, hero: { x: 6, y: 0 } }).join('\n')).toMatch(/hero start \(6,0\) out of bounds/);
+    expect(validateLevel({ ...ok, hero: { x: -1, y: 2 } }).join('\n')).toMatch(/hero start.*out of bounds/);
+    expect(validateLevel({ ...ok, hero: { x: 5, y: 0 } }).join('\n')).toMatch(/hero start \(5,0\) is not a free cell \(wall/);
+    expect(validateLevel({ ...ok, hero: { x: 2, y: 1 } }).join('\n')).toMatch(/not a free cell \(sandBox#0/);
+    expect(validateLevel({ ...ok, hero: { x: 0, y: 7 } }).join('\n')).toMatch(/not a free cell \(box#0/);
+    // floating: fine without gravity, rejected with it; resting on the floor, a box, a wall is fine
+    expect(validateLevel({ ...ok, hero: { x: 1, y: 3 } })).toEqual([]);
+    const g: LevelDef = { ...ok, boxGravity: true };
+    expect(validateLevel(g)).toEqual([]);
+    expect(validateLevel({ ...g, hero: { x: 1, y: 3 } }).join('\n')).toMatch(/hero start \(1,3\) does not start resting/);
+    expect(validateLevel({ ...g, hero: { x: 0, y: 6 } })).toEqual([]); // on the red box
+    expect(validateLevel({ ...g, hero: { x: 2, y: 0 } })).toEqual([]); // on the sand box
   });
 
   it('rejects duplicate level ids', () => {

@@ -9,6 +9,7 @@ export interface Chapter {
 export const CHAPTERS: readonly Chapter[] = [
   { title: 'Sand', start: 0 },
   { title: 'Workshop', start: 18 },
+  { title: 'Pusher', start: 27 },
 ];
 
 /** Chapters that contain at least one of `levelCount` levels, with their [start, end) ranges. */

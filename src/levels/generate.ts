@@ -8,9 +8,9 @@
 // with a fixed seed (SIM_SEED), so generateLevel(seed, difficulty) is deterministic.
 import type { Box, BoxDef, ColorId, GameState, LayerDef, LevelDef, SandBoxDef, ShapeName } from '../core/types';
 import { SHAPES, shapeBounds } from '../core/shapes';
-import { canPlace, createGame, gameSpace, stepGame, tryMoveBox, groupCount } from '../core';
+import { canPlace, createGame, fallPlan, gameSpace, heroSupported, moveHero, stepGame, tryMoveBox, groupCount } from '../core';
 import { validateLevel } from './validate';
-import { DEFAULT_MODEL, greedySolve, makeStack, solveMany, type ModelParams, type SolveResult } from './solver';
+import { DEFAULT_MODEL, greedySolve, makeStack, scriptedPlan, solveMany, type Intent, type ModelParams, type SolveResult } from './solver';
 
 // ---------------------------------------------------------------------------------------------
 // RNG (mulberry32, local so the generator is independent of the sim's RNG usage)
@@ -113,6 +113,9 @@ const PLAN_STEP_CAP = 150 * 60;
 /** Sim time budget per drag (steps; 60 s): a flow that is still going after a minute is not fun
  *  to wait for (and costly to verify). */
 const DRAG_STEP_CAP = 60 * 60;
+/** Hero levels: sim steps between two inputs of one entry (as src/levels/replay.ts). */
+const HERO_INPUT_STEPS = 6;
+const HERO_DIRS: Record<string, 'up' | 'down' | 'left' | 'right'> = { U: 'up', D: 'down', L: 'left', R: 'right' };
 /** Quiet steps to wait (5 s) for a blocked drag's way to clear / a box to thaw. */
 const WAIT_QUIET_STEPS = 300;
 
@@ -164,8 +167,11 @@ function simSettle(state: GameState, maxSteps: number, quiet = QUIET_STEPS, unti
     steps++;
     if (until?.()) break;
     let total = state.completedCount * 1_000_000;
-    for (const b of state.boxes) if (b.state === 'active') total += b.region.count;
-    if (total === last) {
+    for (const b of state.boxes) if (b.state === 'active') total += b.region.count + (b.x + 1) * 7919 + (b.y + 1) * 104729;
+    if (state.hero) total += (state.hero.x + 1) * 15485863 + (state.hero.y + 1) * 32452843;
+    // a box (or the hero) still falling (box gravity) is activity: a drag that drops a stack is
+    // not settled until everything has landed
+    if (total === last && !(state.boxGravity && (fallPlan(state).size > 0 || (state.hero && !heroSupported(state))))) {
       if (++still >= quiet) break;
       if ((still & 7) === 0 && simStatic(state)) break;
     } else {
@@ -250,7 +256,30 @@ export function replayInSim(
   });
   for (let si = 0; si < path.length; si++) {
     const step = path[si];
-    const m = /box#(\d+) -> \((\d+),(\d+)\)/.exec(step);
+    if (state.hero) {
+      // hero level: one entry = a string of U/D/L/R inputs at a human pace, then settle
+      if (!/^[UDLR]+$/.test(step)) return { won: false, reason: `bad hero entry ${step}`, steps, executed };
+      for (const ch of step) {
+        if (!moveHero(state, HERO_DIRS[ch])) return { won: false, reason: `${step}: input ${ch} blocked at (${state.hero.x},${state.hero.y})`, steps, executed };
+        for (let i = 0; (i < HERO_INPUT_STEPS || !heroSupported(state) || state.hero.falling > 0) && i < 600 && !state.won; i++) {
+          stepGame(state);
+          steps++;
+        }
+        if (state.won) break;
+      }
+      executed.push(step);
+      if (!state.won) {
+        const lim = Math.min(cap - steps, DRAG_STEP_CAP);
+        const n = simSettle(state, lim);
+        steps += n;
+        if (n >= lim && !state.won) return { won: false, reason: `${step}: slow flow (cap)`, steps, executed };
+      }
+      opts.onStep?.(step, state);
+      if (state.won) break;
+      if (steps >= cap) return { won: false, reason: 'sim time cap', steps, executed };
+      continue;
+    }
+    const m = /box#(\d+) -> \((-?\d+),(-?\d+)\)/.exec(step);
     if (!m) return { won: false, reason: `bad step ${step}`, steps, executed };
     const box = state.boxes[+m[1]];
     if (box.state === 'active') {
@@ -281,8 +310,9 @@ export function replayInSim(
     opts.onStep?.(step, state);
     if (state.won) break;
     if (steps >= cap) return { won: false, reason: 'sim time cap', steps, executed };
-    // early bail: a box that will never move again and cannot fill where it stands
-    const stuck = strandedBox(state, new Set(moved.slice(si + 1)));
+    // early bail: a box that will never move again and cannot fill where it stands (not under
+    // box gravity: a box can still fall into contact when something below it pops)
+    const stuck = state.boxGravity ? -1 : strandedBox(state, new Set(moved.slice(si + 1)));
     if (stuck >= 0) return { won: false, reason: `stranded box#${stuck} after ${step}`, steps, executed };
   }
   if (!state.won) steps += simSettle(state, cap - steps);
@@ -448,7 +478,7 @@ function mergeLayers(ls: LayerDef[]): LayerDef[] {
   return out;
 }
 
-function attempt(r: Rng, d: number, p: DifficultyParams, fail: (k: string) => null): LevelDef | null {
+function attempt(r: Rng, d: number, p: DifficultyParams, fail: (k: string) => null, shapeD = d): LevelDef | null {
   const W = ri(r, p.widths[0], p.widths[1]);
   const H = ri(r, p.heights[0], p.heights[1]);
   // Sand boxes must be able to hold the sand of the minimum number of boxes.
@@ -471,7 +501,7 @@ function attempt(r: Rng, d: number, p: DifficultyParams, fail: (k: string) => nu
   const shapes: ShapeName[] = [];
   let cells = 0;
   for (let i = 0; i < nBoxes; i++) {
-    const s = pickShape(r, d, maxCells - cells);
+    const s = pickShape(r, shapeD, maxCells - cells);
     if (!s) break;
     shapes.push(s);
     cells += SHAPES[s].length;
@@ -603,10 +633,641 @@ function attempt(r: Rng, d: number, p: DifficultyParams, fail: (k: string) => nu
 const PALETTE: ColorId[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 // ---------------------------------------------------------------------------------------------
+// Box-gravity levels (DESIGN.md "Box gravity"): built from parametrised stations, each a pattern
+// the physics handles (see the rules of thumb in src/levels/index.ts):
+//   A  shaft + tray: a one-row sand box ("tray", 2-3 one-cell bands) at the foot of a 1-wide shaft
+//      against a board edge; only the bottom box of the shaft's stack touches it and drinks the top
+//      band, then the stack drops one cell. Walls cover the tray's top and its far end.
+//      Variants: 'plug' (the foot box starts frozen), 'pin' (the shaft's boxes start in a stack
+//      resting on a 2x1 pin that bridges the shaft and the top of its wall; pulling the pin drops
+//      the stack, in whatever order it is in).
+//   B  floating sand box (1-2 wide, 1-2 one-row layers) over a wall ledge: a box resting on the
+//      ledge catches the bottom layer from below; the next catcher goes on the same ledge. The
+//      pin of an A-pin station is caught on a B ledge of its color.
+// All remaining boxes start on the floor in a small pile. Colors are unique per band/layer.
+
+export interface GravityParams {
+  widths: [number, number];
+  heights: [number, number];
+  minDrags: number;
+  maxDrags: number;
+  /** Minimum number of boxes. */
+  minBoxes: number;
+  greedyMustFail: boolean;
+  /** Template names allowed with weights. */
+  templates: [string, number][];
+}
+
+export function gravityParams(difficulty: number): GravityParams {
+  const d = Math.max(1, Math.min(10, Math.round(difficulty)));
+  const minDrags = [0, 1, 2, 3, 3, 4, 5, 5, 6, 6, 7][d];
+  const t: [string, number][] = [
+    ['A', d <= 4 ? 3 : d <= 6 ? 1 : 0],
+    ['B', d <= 2 ? 2 : d <= 6 ? 0.3 : 0],
+    ['A+B', d >= 2 ? (d >= 7 ? 1 : 3) : 0],
+    ['Aplug+B', d >= 3 ? (d >= 7 ? 1.5 : 2 + 0.3 * d) : 0],
+    ['Apin+Bpin', d >= 3 ? (d >= 7 ? 0.5 : 2 + 0.3 * d) : 0],
+    ['A+A', d >= 4 ? 1.5 : 0],
+    ['Apin+Bpin+B', d >= 6 ? 2 : 0],
+    ['Aplug+B+A', d >= 6 ? 2 : 0],
+    ['Apin+Bpin+A', d >= 7 ? 2 : 0],
+    // trigger stacks (the headline gravity mechanic): a pre-loaded shaft gated by frozen boxes
+    // that thaw as boxes pop elsewhere
+    ['Atrig+B', d >= 2 ? (d >= 4 ? 3 : 1.5) : 0],
+    ['Atrig+B+B', d >= 4 ? 6 : 0],
+    ['Atrig2+B+B', d >= 6 ? 7 : 0],
+    ['Atrig2+B+A', d >= 8 ? 3 : 0],
+  ];
+  return {
+    widths: d <= 3 ? [6, 8] : [7, 9],
+    heights: d <= 3 ? [8, 9] : [9, 11],
+    minDrags,
+    maxDrags: minDrags * 2 + 5,
+    minBoxes: [0, 1, 2, 3, 3, 4, 4, 5, 5, 6, 6][d],
+    greedyMustFail: d >= 5,
+    templates: t.filter(([, w]) => w > 0),
+  };
+}
+
+interface GBuild {
+  W: number;
+  H: number;
+  occ: Uint8Array; // 1 = wall / sand box / box
+  walls: { x: number; y: number }[];
+  sandBoxes: SandBoxDef[];
+  boxes: BoxDef[];
+  /** Boxes still to place on the floor pile. */
+  pile: BoxDef[];
+  colors: ColorId[];
+  /** Columns the pile must keep clear (shafts). */
+  noPile: Set<number>;
+  /** Intended solution, by box object: catches (B) first, then each shaft's sequence (A). */
+  introB: GIntent[];
+  introA: GIntent[];
+  /** Trigger stack (foot first), if any. */
+  trigger?: BoxDef[];
+}
+type GIntent = { ref: BoxDef; kind: 'dock' | 'park' } | { ref: BoxDef; kind: 'shaft'; x: number };
+
+function gTake(g: GBuild): ColorId | null {
+  return g.colors.length ? g.colors.pop()! : null;
+}
+function gWall(g: GBuild, x: number, y: number): boolean {
+  if (x < 0 || y < 0 || x >= g.W || y >= g.H) return false;
+  if (g.occ[y * g.W + x]) return false;
+  g.occ[y * g.W + x] = 1;
+  g.walls.push({ x, y });
+  return true;
+}
+function gFree(g: GBuild, x: number, y: number, w: number, h: number): boolean {
+  for (let yy = y; yy < y + h; yy++)
+    for (let xx = x; xx < x + w; xx++) if (xx < 0 || yy < 0 || xx >= g.W || yy >= g.H || g.occ[yy * g.W + xx]) return false;
+  return true;
+}
+function gClaim(g: GBuild, x: number, y: number, w: number, h: number): void {
+  for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) g.occ[yy * g.W + xx] = 1;
+}
+
+/** Station A on the given side. Returns the columns it uses, or null if it does not fit. */
+function stationA(r: Rng, g: GBuild, side: 'L' | 'R', variant: '' | 'plug' | 'pin' | 'trig' | 'trig2', bands: number, pinColor: ColorId | null): boolean {
+  const { W, H } = g;
+  const w = bands; // one cell per band, brim full
+  if (w + 3 > W) return false;
+  const shaft = side === 'L' ? 0 : W - 1;
+  const t0 = side === 'L' ? 1 : W - 1 - w; // tray's left column
+  const near = side === 'L' ? t0 : t0 + w - 1; // tray column beside the shaft
+  const end = side === 'L' ? t0 + w : t0 - 1; // tray's far end
+  if (!gFree(g, Math.min(shaft, t0, end), H - 1, w + 2, 1)) return false;
+  const colors: ColorId[] = [];
+  for (let i = 0; i < bands; i++) {
+    const c = gTake(g);
+    if (c === null) return false;
+    colors.push(c);
+  }
+  g.sandBoxes.push({ x: t0, y: H - 1, w, h: 1, layers: colors.map((color) => ({ color, amount: 1 })) });
+  gClaim(g, t0, H - 1, w, 1);
+  gWall(g, end, H - 1);
+  for (let x = t0; x < t0 + w; x++) if (x !== near) gWall(g, x, H - 2);
+  // shaft wall: from `top` down to the tray row, over the near tray column
+  const stackN = bands; // boxes the shaft must hold at once (one per band)
+  let top: number;
+  // the pin needs the stack above it (stackN cells) and at least two wall rows below it
+  if (variant === 'pin' && stackN > H - 4) return false;
+  const pinRow = variant === 'pin' ? ri(r, stackN, H - 4) : 0;
+  if (variant === 'pin') top = pinRow + 1;
+  else top = ri(r, 1, Math.max(1, H - 3 - stackN));
+  for (let y = top; y <= H - 2; y++) if (!gWall(g, near, y)) return false;
+  g.noPile.add(shaft);
+  // boxes of this station, foot first = top band first (bands are listed bottom first)
+  const order = colors.slice().reverse();
+  const boxes: BoxDef[] = order.map((color) => ({ shape: '1x1', x: 0, y: 0, color }));
+  const drop = (b: BoxDef): GIntent => ({ ref: b, kind: 'shaft', x: shaft });
+  if (variant === 'trig' || variant === 'trig2') {
+    // trigger stack: the whole sequence stands in the shaft in drain order (foot = top band);
+    // the foot box is frozen (counts set later), and with 'trig2' one box higher up too
+    boxes.forEach((b, i) => {
+      Object.assign(b, { x: shaft, y: H - 1 - i });
+      g.boxes.push(b);
+      gClaim(g, shaft, H - 1 - i, 1, 1);
+    });
+    boxes[0].frozen = 1;
+    if (variant === 'trig2') {
+      if (bands < 2) return false;
+      boxes[ri(r, 1, bands - 1)].frozen = 1;
+    }
+    g.trigger = boxes;
+  } else if (variant === 'plug') {
+    const plug = Object.assign(boxes[0], { x: shaft, y: H - 1, frozen: 1 });
+    g.boxes.push(plug);
+    gClaim(g, shaft, H - 1, 1, 1);
+    g.pile.push(...boxes.slice(1));
+    g.introA.push(...boxes.slice(1).map(drop));
+  } else if (variant === 'pin') {
+    if (pinColor === null) return false;
+    const px = side === 'L' ? shaft : near;
+    if (!gFree(g, px, pinRow, 2, 1)) return false;
+    const pin: BoxDef = { shape: '2x1', x: px, y: pinRow, color: pinColor };
+    g.boxes.push(pin);
+    gClaim(g, px, pinRow, 2, 1);
+    // pre-built stack in the shaft above the pin, in a random order (bottom first)
+    const pre = shuffle(r, boxes.slice());
+    let y = pinRow - 1;
+    for (const b of pre) {
+      Object.assign(b, { x: shaft, y });
+      g.boxes.push(b);
+      gClaim(g, shaft, y, 1, 1);
+      y--;
+    }
+    if (pre.every((b, i) => b === boxes[i])) g.introA.push({ ref: pin, kind: 'dock' });
+    else {
+      // unload the stack from the top, pull the pin onto its ledge, then drop in band order
+      for (const b of pre.slice().reverse()) g.introA.push({ ref: b, kind: 'park' });
+      g.introA.push({ ref: pin, kind: 'dock' });
+      g.introA.push(...boxes.map(drop));
+    }
+  } else {
+    g.pile.push(...boxes);
+    g.introA.push(...boxes.map(drop));
+  }
+  return true;
+}
+
+/** Station B: floating sand box over a wall ledge (or over the floor). `layers` colors given, or
+ *  taken from the pool; `catchers` false when the catcher already exists (an A-pin's pin). */
+function stationB(r: Rng, g: GBuild, w: number, layers: ColorId[] | number, catchers = true): boolean {
+  const { W, H } = g;
+  const cols: ColorId[] = [];
+  if (typeof layers === 'number') {
+    for (let i = 0; i < layers; i++) {
+      const c = gTake(g);
+      if (c === null) return false;
+      cols.push(c);
+    }
+  } else cols.push(...layers);
+  const h = cols.length;
+  for (let t = 0; t < 30; t++) {
+    const x = ri(r, 0, W - w);
+    const onFloor = rnd(r) < 0.25;
+    const ly = onFloor ? H : ri(r, h + 1, H - 3); // ledge row (H = the floor)
+    const y = ly - 1 - h; // sand box top
+    if (y < 0) continue;
+    if (!gFree(g, x, y, w, h + 1)) continue; // sand box + dock row
+    if (!onFloor && !gFree(g, x, ly, w, 1)) continue;
+    // keep a free cell beside the dock row so a catcher can be carried in
+    if (!gFree(g, x - 1, y + h, 1, 1) && !gFree(g, x + w, y + h, 1, 1)) continue;
+    if ([...g.noPile].some((c) => c >= x - 1 && c <= x + w)) continue;
+    g.sandBoxes.push({ x, y, w, h, layers: cols.map((color) => ({ color, amount: w })) });
+    gClaim(g, x, y, w, h);
+    if (!onFloor) for (let xx = x; xx < x + w; xx++) gWall(g, xx, ly);
+    // catchers, bottom layer first
+    if (catchers)
+      for (const color of cols) {
+        const b: BoxDef = { shape: w === 2 ? '2x1' : '1x1', x: 0, y: 0, color };
+        g.pile.push(b);
+        g.introB.push({ ref: b, kind: 'dock' });
+      }
+    return true;
+  }
+  return false;
+}
+
+/** Drops the pile boxes onto the floor in a random order (low stacks, resting, not touching sand). */
+function placePile(r: Rng, g: GBuild, level: LevelDef): boolean {
+  const { W, H } = g;
+  for (const b of shuffle(r, g.pile.slice())) {
+    const { w, h } = shapeBounds(b.shape);
+    const cands: [number, number][] = [];
+    for (let x = 0; x + w <= W; x++) {
+      if ([...Array(w).keys()].some((i) => g.noPile.has(x + i))) continue;
+      // drop from the lowest free run in these columns: find resting y scanning up from the floor
+      for (let y = H - h; y >= Math.max(0, H - 4); y--) {
+        if (!gFree(g, x, y, w, h)) continue;
+        const rests = y + h >= H || [...Array(w).keys()].some((i) => g.occ[(y + h) * W + x + i]);
+        if (!rests) continue;
+        const cand = { ...b, x, y };
+        if (boxTouchesAnySand(level, cand)) continue;
+        cands.push([x, y]);
+        break;
+      }
+    }
+    if (!cands.length) return false;
+    const [x, y] = pick(r, cands);
+    Object.assign(b, { x, y });
+    g.boxes.push(b);
+    gClaim(g, x, y, w, h);
+  }
+  return true;
+}
+
+/** True if the box shares an edge with any sand box (it would drain or skim right away). */
+function boxTouchesAnySand(level: LevelDef, b: BoxDef): boolean {
+  for (const c of SHAPES[b.shape])
+    for (const [dx, dy] of [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+    ])
+      if (sandBoxAt(level, b.x + c.x + dx, b.y + c.y + dy) >= 0) return true;
+  return false;
+}
+
+function attemptGravity(r: Rng, d: number, p: GravityParams, fail: (k: string) => null): (LevelDef & { template?: string; intents?: Intent[] }) | null {
+  const W = ri(r, p.widths[0], p.widths[1]);
+  const H = ri(r, p.heights[0], p.heights[1]);
+  const template = weighted(r, p.templates);
+  const g: GBuild = {
+    W,
+    H,
+    occ: new Uint8Array(W * H),
+    walls: [],
+    sandBoxes: [],
+    boxes: [],
+    pile: [],
+    colors: shuffle(r, PALETTE.slice()).slice(0, 6),
+    noPile: new Set(),
+    introB: [],
+    introA: [],
+  };
+  const level: LevelDef & { template?: string; intents?: Intent[] } = { id: '', name: '', width: W, height: H, boxGravity: true, sandBoxes: g.sandBoxes, boxes: g.boxes, walls: g.walls };
+  const side: 'L' | 'R' = rnd(r) < 0.5 ? 'L' : 'R';
+  const other = side === 'L' ? 'R' : 'L';
+  const bands = () => (d <= 2 ? 2 : ri(r, 2, 3));
+  const bw = () => (rnd(r) < 0.6 ? 2 : 1);
+  const bl = () => (d <= 2 ? ri(r, 1, 2) : ri(r, 1, 2));
+  let ok = true;
+  for (const part of template.split('+')) {
+    if (!ok) break;
+    if (part === 'A') ok = stationA(r, g, g.sandBoxes.some((s) => s.y === H - 1) ? other : side, '', bands(), null);
+    else if (part === 'Aplug') ok = stationA(r, g, side, 'plug', bands(), null);
+    else if (part === 'Atrig') ok = stationA(r, g, side, 'trig', bands(), null);
+    else if (part === 'Atrig2') ok = stationA(r, g, side, 'trig2', 3, null);
+    else if (part === 'Apin') {
+      const pc = gTake(g);
+      ok = pc !== null && stationA(r, g, side, 'pin', bands(), pc) && stationB(r, g, 2, [pc], false); // the pin is its catcher
+    } else if (part === 'Bpin') continue; // built with its Apin
+    else if (part === 'B') {
+      // trigger stations do the work at higher difficulty: two layers (caught in order) when the
+      // colors allow
+      const want = template.includes('trig') && d >= 5 ? 2 : bl();
+      ok = stationB(r, g, bw(), Math.max(1, Math.min(want, g.colors.length)));
+    }
+  }
+  if (!ok) return fail('gStation');
+  // a plug thaws after some pops elsewhere (at most the number of boxes not in its shaft)
+  const plug = g.boxes.find((b) => b.frozen);
+  if (plug) {
+    const tray = g.sandBoxes.find((sb) => sb.layers.some((l) => l.color === plug.color))!;
+    const elsewhere = [...g.pile, ...g.boxes].filter((b) => !tray.layers.some((l) => l.color === b.color)).length;
+    if (elsewhere < 1) return fail('gPlug');
+    plug.frozen = ri(r, 1, Math.min(2, elsewhere));
+  }
+  // trigger stack thaw counts: the foot needs n1 pops elsewhere; a higher plug at stack index k
+  // reaches the foot after n1 + k pops, so a count above that makes the stack wait again for
+  // more pops elsewhere (when there are enough of them)
+  if (g.trigger) {
+    const outside = g.pile.length + g.boxes.filter((b) => !g.trigger!.includes(b)).length;
+    if (outside < 1) return fail('gTrigger');
+    const foot = g.trigger[0];
+    const k = g.trigger.findIndex((b, i) => i > 0 && b.frozen);
+    const n1 = ri(r, 1, k > 0 ? Math.max(1, outside - 1) : outside);
+    foot.frozen = n1;
+    if (k > 0) g.trigger[k].frozen = n1 + k < outside + k ? ri(r, n1 + k + 1, outside + k) : outside + k;
+  }
+  // an optional floor wall stub as an obstacle in the pile area
+  if (rnd(r) < 0.4) {
+    const x = ri(r, 0, W - 1);
+    if (!g.noPile.has(x) && gFree(g, x, H - 1, 1, 1) && sandBoxAt(level, x - 1, H - 1) < 0 && sandBoxAt(level, x + 1, H - 1) < 0) gWall(g, x, H - 1);
+  }
+  if (g.boxes.length + g.pile.length < p.minBoxes) return fail('gFewBoxes');
+  if (!placePile(r, g, level)) return fail('gPile');
+  level.boxes = g.boxes.sort((a, b) => a.y - b.y || a.x - b.x);
+  level.template = template;
+  level.intents = [...g.introB, ...g.introA].map((it) => {
+    const box = level.boxes.indexOf(it.ref);
+    return it.kind === 'shaft' ? { box, kind: 'shaft' as const, x: it.x } : { box, kind: it.kind };
+  });
+  return level;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Hero (Sokoban) levels (DESIGN.md "Hero mode"): boxes are pushed one cell per input by a
+// one-cell hero. Floating hero levels reuse the floating layout (sand boxes, conservation) with
+// fewer, simpler boxes and corridor walls; gravity hero levels stand on a solid ground with a pit
+// (a shaft down to a buried tray) and floating sand boxes right above the walking surface (a box
+// pushed under one catches its bottom layer).
+
+export function heroParams(difficulty: number): DifficultyParams {
+  const d = Math.max(1, Math.min(10, Math.round(difficulty)));
+  const base = difficultyParams(d);
+  const minDrags = [0, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11][d]; // pushes
+  return {
+    ...base,
+    widths: d <= 3 ? [6, 7] : [7, 8],
+    heights: d <= 3 ? [7, 8] : [8, 10],
+    sandBoxes: d <= 2 ? [1, 1] : d <= 5 ? [1, 2] : [2, 3],
+    boxes: [[0, 1], [1, 2], [2, 2], [2, 3], [3, 3], [3, 4], [3, 4], [3, 4], [3, 4], [4, 4], [4, 5]][d] as [number, number],
+    colors: [Math.min(2, base.colors[0]), Math.min(4, base.colors[1])],
+    density: [0.06, 0.18],
+    frozen: d >= 5 ? 1 : 0,
+    minDrags,
+    maxDrags: minDrags * 3 + 10,
+    greedyMustFail: false,
+    cluster: 0,
+  };
+}
+
+/** Walls in a few short segments on free cells (keeping the free space connected). */
+function addCorridorWalls(r: Rng, level: LevelDef, n: number): void {
+  const W = level.width;
+  const H = level.height;
+  const occ = new Uint8Array(W * H);
+  const mark = (x: number, y: number) => (occ[y * W + x] = 1);
+  for (const sb of level.sandBoxes) for (let y = sb.y; y < sb.y + sb.h; y++) for (let x = sb.x; x < sb.x + sb.w; x++) mark(x, y);
+  for (const b of level.boxes) for (const c of SHAPES[b.shape]) mark(b.x + c.x, b.y + c.y);
+  const walls = level.walls ?? (level.walls = []);
+  let placed = 0;
+  for (let t = 0; t < 60 && placed < n; t++) {
+    const len = ri(r, 1, 3);
+    const horiz = rnd(r) < 0.5;
+    const x0 = ri(r, 0, W - 1);
+    const y0 = ri(r, 0, H - 1);
+    const cells: [number, number][] = [];
+    for (let k = 0; k < len; k++) cells.push(horiz ? [x0 + k, y0] : [x0, y0 + k]);
+    if (cells.some(([x, y]) => x >= W || y >= H || occ[y * W + x])) continue;
+    // keep the free cells (boxes count as free: they can move) connected
+    const rects = [
+      ...level.sandBoxes,
+      ...walls.map((w) => ({ x: w.x, y: w.y, w: 1, h: 1 })),
+      ...cells.map(([x, y]) => ({ x, y, w: 1, h: 1 })),
+    ];
+    if (!freeConnected(W, H, rects)) continue;
+    for (const [x, y] of cells) {
+      mark(x, y);
+      walls.push({ x, y });
+    }
+    placed += cells.length;
+  }
+}
+
+/** A box that cannot move on either axis (blocked on a horizontal and a vertical side by an edge,
+ *  wall or sand box) is dead unless it is already docked. */
+function boxCornered(level: LevelDef, b: BoxDef): boolean {
+  const W = level.width;
+  const H = level.height;
+  const fixedAt = (x: number, y: number) =>
+    x < 0 || y < 0 || x >= W || y >= H || sandBoxAt(level, x, y) >= 0 || (level.walls ?? []).some((w) => w.x === x && w.y === y);
+  const cs = SHAPES[b.shape].map((c) => [b.x + c.x, b.y + c.y]);
+  const blocked = (dx: number, dy: number) => cs.some(([x, y]) => fixedAt(x + dx, y + dy));
+  return (blocked(-1, 0) || blocked(1, 0)) && (blocked(0, -1) || blocked(0, 1)) && blocked(-1, 0) !== blocked(1, 0) && blocked(0, -1) !== blocked(0, 1);
+}
+
+/** Floating hero levels: can box i alone (the other boxes removed) be pushed by the hero (from
+ *  its start) until it touches a sand box holding its color? A cheap necessary condition. */
+function heroCanDeliver(level: LevelDef, i: number): boolean {
+  const W = level.width;
+  const H = level.height;
+  const fixed = new Uint8Array(W * H);
+  for (const sb of level.sandBoxes) for (let y = sb.y; y < sb.y + sb.h; y++) for (let x = sb.x; x < sb.x + sb.w; x++) fixed[y * W + x] = 1;
+  for (const w of level.walls ?? []) fixed[w.y * W + w.x] = 1;
+  const b = level.boxes[i];
+  const cells = SHAPES[b.shape];
+  const fits = (x: number, y: number) =>
+    cells.every((c) => x + c.x >= 0 && y + c.y >= 0 && x + c.x < W && y + c.y < H && !fixed[(y + c.y) * W + x + c.x]);
+  const covers = (bx: number, by: number, x: number, y: number) => cells.some((c) => bx + c.x === x && by + c.y === y);
+  const goal = (bx: number, by: number) =>
+    cells.some((c) =>
+      [
+        [1, 0],
+        [-1, 0],
+        [0, 1],
+        [0, -1],
+      ].some(([dx, dy]) => {
+        const k = sandBoxAt(level, bx + c.x + dx, by + c.y + dy);
+        return k >= 0 && level.sandBoxes[k].layers.some((l) => l.color === b.color);
+      }),
+    );
+  const D: [number, number][] = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ];
+  // state: box position + hero cell; the hero walks freely around the box
+  const seen = new Set<number>();
+  const q: [number, number, number, number][] = [[b.x, b.y, level.hero!.x, level.hero!.y]];
+  seen.add(((b.y * W + b.x) * H + level.hero!.y) * W + level.hero!.x);
+  for (let qi = 0; qi < q.length && qi < 20000; qi++) {
+    const [bx, by, hx, hy] = q[qi];
+    if (goal(bx, by)) return true;
+    for (const [dx, dy] of D) {
+      const nx = hx + dx;
+      const ny = hy + dy;
+      if (nx < 0 || ny < 0 || nx >= W || ny >= H || fixed[ny * W + nx]) continue;
+      let nbx = bx;
+      let nby = by;
+      if (covers(bx, by, nx, ny)) {
+        if (!fits(bx + dx, by + dy)) continue;
+        nbx += dx;
+        nby += dy;
+      }
+      const k = ((nby * W + nbx) * H + ny) * W + nx;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      q.push([nbx, nby, nx, ny]);
+    }
+  }
+  return false;
+}
+
+function attemptHero(r: Rng, d: number, p: DifficultyParams, fail: (k: string) => null): LevelDef | null {
+  const level = attempt(r, d, p, fail, Math.min(d, 3));
+  if (!level) return null;
+  addCorridorWalls(r, level, ri(r, Math.floor(d / 2), 2 + d));
+  if (level.boxes.some((b) => boxCornered(level, b))) return fail('hCorner');
+  // hero start: a random free cell
+  const W = level.width;
+  const free: [number, number][] = [];
+  for (let y = 0; y < level.height; y++)
+    for (let x = 0; x < W; x++)
+      if (
+        sandBoxAt(level, x, y) < 0 &&
+        !(level.walls ?? []).some((w) => w.x === x && w.y === y) &&
+        !level.boxes.some((b) => SHAPES[b.shape].some((c) => b.x + c.x === x && b.y + c.y === y))
+      )
+        free.push([x, y]);
+  if (!free.length) return fail('hStart');
+  const [hx, hy] = pick(r, free);
+  level.hero = { x: hx, y: hy };
+  for (let i = 0; i < level.boxes.length; i++) if (!level.boxes[i].frozen && !heroCanDeliver(level, i)) return fail('hReach');
+  return level;
+}
+
+export function gravityHeroParams(difficulty: number): GravityParams {
+  const d = Math.max(1, Math.min(10, Math.round(difficulty)));
+  const minDrags = [0, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6][d]; // pushes
+  const t: [string, number][] = [
+    ['HB', d <= 2 ? 2 : 0],
+    ['HA', d <= 3 ? 3 : 0],
+    ['HA+HB', d >= 2 && d <= 6 ? 3 : 0],
+    ['HA+HB+HB', d >= 5 ? 3 : 0],
+    ['HAtrig+HB', d >= 3 && d <= 4 ? 4 : 0],
+    ['HAtrig+HB+HB', d >= 4 ? 5 : 0],
+    ['HAtrig2+HB+HB', d >= 7 ? 6 : 0],
+  ];
+  return {
+    widths: d <= 3 ? [7, 8] : [8, 10],
+    heights: [7, 9],
+    minDrags,
+    maxDrags: minDrags * 3 + 10,
+    minBoxes: [0, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6][d],
+    greedyMustFail: false,
+    templates: t.filter(([, w]) => w > 0),
+  };
+}
+
+function attemptGravityHero(r: Rng, d: number, p: GravityParams, fail: (k: string) => null): (LevelDef & { template?: string }) | null {
+  // Built for a pit on the left edge, mirrored half the time. Row `gy` is the walking surface:
+  //   pit | tower (shaft boxes, drain order bottom-up) or a pre-loaded trigger stack in the pit |
+  //   hero ... [catcher] _ [dock under a floating sand box] _ [catcher] _ [dock] ...
+  // The hero pushes the bottom of the tower into the pit (the tower drops a cell each time it
+  // steps back), and pushes each catcher right under its sand box (nearest first, walking under
+  // the sand boxes it has done). Optional: a step to climb, a frozen catcher that blocks its dock
+  // until enough pops elsewhere (the hero climbs over it meanwhile).
+  const W = ri(r, p.widths[0], p.widths[1]);
+  const H = ri(r, p.heights[0], p.heights[1]);
+  const template = weighted(r, p.templates);
+  const parts = template.split('+');
+  const pitDepth = ri(r, 3, 4);
+  const gy = H - 1 - pitDepth;
+  if (gy < 3) return fail('ghSize');
+  const colors = shuffle(r, PALETTE.slice()).slice(0, 6);
+  const take = () => colors.pop() ?? null;
+  const walls: { x: number; y: number }[] = [];
+  const sandBoxes: SandBoxDef[] = [];
+  const boxes: BoxDef[] = [];
+  const a = parts.find((q) => q.startsWith('HA'));
+  let trigger: BoxDef[] | null = null;
+  let cursor = 1; // next free surface column
+  let bands = 0;
+  if (a) {
+    bands = d <= 2 ? 2 : ri(r, 2, 3);
+    const cs: ColorId[] = [];
+    for (let i = 0; i < bands; i++) cs.push(take()!);
+    sandBoxes.push({ x: 1, y: H - 1, w: bands, h: 1, layers: cs.map((color) => ({ color, amount: 1 })) });
+    const order: BoxDef[] = cs
+      .slice()
+      .reverse()
+      .map((color) => ({ shape: '1x1', x: 0, y: 0, color }));
+    if (a.startsWith('HAtrig')) {
+      if (bands > pitDepth) return fail('ghPit');
+      order.forEach((b, i) => Object.assign(b, { x: 0, y: H - 1 - i }));
+      order[0].frozen = 1;
+      if (a === 'HAtrig2' && bands >= 2) order[ri(r, 1, bands - 1)].frozen = 1;
+      trigger = order;
+    } else {
+      if (gy - bands + 1 < 1) return fail('ghTower');
+      order.forEach((b, i) => Object.assign(b, { x: 1, y: gy - i })); // the tower, at the pit edge
+      cursor = 2;
+    }
+    boxes.push(...order);
+  }
+  // ground: everything below the surface is wall except the pit (column 0) and the tray
+  for (let y = gy + 1; y < H; y++)
+    for (let x = a ? 1 : 0; x < W; x++) {
+      if (y === H - 1 && x >= 1 && x <= bands) continue;
+      walls.push({ x, y });
+    }
+  if (!a) for (let y = gy + 1; y < H; y++) walls.push({ x: 0, y }); // no pit: solid ground
+  // hero start, then maybe a step
+  const hero = { x: cursor + ri(r, 0, 1), y: gy };
+  cursor = hero.x + 1;
+  if (d >= 3 && rnd(r) < 0.5) {
+    walls.push({ x: cursor, y: gy });
+    cursor += 1;
+  }
+  // stations: catcher, gap, dock (sand box above it), gap
+  const catchers: BoxDef[] = [];
+  for (const q of parts) {
+    if (q !== 'HB') continue;
+    const w = rnd(r) < 0.5 ? 2 : 1;
+    const color = take();
+    if (color === null) return fail('ghColors');
+    const cx = cursor + ri(r, 0, 1);
+    const dx = cx + w + 1;
+    if (dx + w > W) return fail('ghWidth');
+    const catcher: BoxDef = { shape: w === 2 ? '2x1' : '1x1', x: cx, y: gy, color };
+    boxes.push(catcher);
+    catchers.push(catcher);
+    sandBoxes.push({ x: dx, y: gy - 1, w, h: 1, layers: [{ color, amount: w }] });
+    cursor = dx + w + 1;
+  }
+  if (cursor > W + 1) return fail('ghWidth');
+  if (boxes.length < p.minBoxes) return fail('gFewBoxes');
+  // a frozen catcher (not the first) at higher difficulty: it waits for pops elsewhere
+  if (d >= 6 && catchers.length >= 2) catchers[ri(r, 1, catchers.length - 1)].frozen = ri(r, 1, Math.max(1, boxes.length - 2));
+  if (trigger) {
+    const outside = boxes.length - trigger.length;
+    if (outside < 1) return fail('gTrigger');
+    const k = trigger.findIndex((b, i) => i > 0 && b.frozen);
+    const n1 = ri(r, 1, k > 0 ? Math.max(1, outside - 1) : outside);
+    trigger[0].frozen = n1;
+    if (k > 0) trigger[k].frozen = n1 + k < outside + k ? ri(r, n1 + k + 1, outside + k) : outside + k;
+  }
+  const level: LevelDef & { template?: string } = {
+    id: '',
+    name: '',
+    width: W,
+    height: H,
+    boxGravity: true,
+    sandBoxes,
+    boxes,
+    walls,
+    hero,
+  };
+  if (rnd(r) < 0.5) {
+    // mirror: pit on the right edge
+    const mx = (x: number, w = 1) => W - x - w;
+    for (const sb of sandBoxes) sb.x = mx(sb.x, sb.w);
+    for (const b of boxes) b.x = mx(b.x, shapeBounds(b.shape).w);
+    for (const w of walls) w.x = mx(w.x);
+    hero.x = mx(hero.x);
+  }
+  level.boxes = boxes.sort((a2, b2) => a2.y - b2.y || a2.x - b2.x);
+  if (level.boxes.some((b) => !b.frozen && boxTouchesAnySand(level, b))) return fail('ghTouch');
+  level.template = template;
+  return level;
+}
+
+// ---------------------------------------------------------------------------------------------
 // Public API
 
 export interface GenerateOptions {
   difficulty: number;
+  /** Box-gravity level (shafts, trays, ledges; DESIGN.md "Box gravity"). Default false. */
+  gravity?: boolean;
+  /** Hero (Sokoban) level: boxes are pushed by the hero (DESIGN.md "Hero mode"). Default false. */
+  hero?: boolean;
   /** Attempts per difficulty level before falling back to an easier one (default 3000). */
   maxAttempts?: number;
   /** Physics-verified candidate levels per difficulty level before falling back (default 40). */
@@ -632,6 +1293,8 @@ export interface GenerateResult {
   replays: number;
   /** Sim steps the accepted plan took. */
   simSteps: number;
+  /** Gravity levels: the station template the layout was built from (e.g. 'Apin+Bpin'). */
+  template?: string;
 }
 
 /** Solver variants that propose candidate plans, most physics-faithful first. */
@@ -650,21 +1313,37 @@ const VARIANTS: { model: ModelParams; noise: number }[] = [
  *  Returns a rejection reason when the faithful model finds no plan at all. */
 function* candidatePlans(
   level: LevelDef,
-  p: DifficultyParams,
+  p: { minDrags: number; maxDrags: number },
   maxStates: number,
   k: number,
   seed: number,
   status: { reason: string },
+  intents?: Intent[],
 ): Generator<SolveResult> {
   const seen = new Set<string>();
   let yielded = 0;
+  if (intents) {
+    const path = scriptedPlan(level, intents);
+    if (path && path.length >= p.minDrags && path.length <= p.maxDrags) {
+      seen.add(path.join(';'));
+      yielded++;
+      yield { solved: true, moves: path.length, optimal: false, explored: 0, path };
+    }
+  }
   let short = false;
   let long = false;
   let defaultEmpty = false;
   for (let vi = 0; vi < VARIANTS.length && yielded < k; vi++) {
     if (defaultEmpty && vi > 1) break;
     const v = VARIANTS[vi];
-    const sols = solveMany(level, { maxStates, maxExplored: 600, model: v.model, noise: v.noise ? hash(seed, v.noise) : 0, solutions: 2 });
+    const hero = !!level.hero;
+    const sols = solveMany(level, {
+      maxStates: hero ? Math.max(maxStates, 8000) : maxStates,
+      maxExplored: hero ? 1200 : 600,
+      model: v.model,
+      noise: v.noise ? hash(seed, v.noise) : 0,
+      solutions: 2,
+    });
     // no plan in the faithful model: only the optimistic variant (index 1) can still find one
     if (!sols.length && vi === 0) {
       defaultEmpty = true;
@@ -697,39 +1376,61 @@ export function generateLevelWithStats(seed: number, opts: number | GenerateOpti
   const k = o.candidates ?? 3;
   let attempts = 0;
   let replays = 0;
+  let curTemplate = '';
   const why = (key: string, t0: number) => {
     if (!o.reasons) return;
     o.reasons[key] = (o.reasons[key] ?? 0) + 1;
+    if (curTemplate) o.reasons[`@${curTemplate}:${key}`] = (o.reasons[`@${curTemplate}:${key}`] ?? 0) + 1;
     o.reasons[key + 'Ms'] = Math.round((o.reasons[key + 'Ms'] ?? 0) + performance.now() - t0);
   };
+  const gravity = !!o.gravity;
+  const heroMode = !!o.hero;
   for (let d = requested; d >= 1; d--) {
-    const p = difficultyParams(d);
+    const p = heroMode ? (gravity ? gravityHeroParams(d) : heroParams(d)) : gravity ? gravityParams(d) : difficultyParams(d);
     // the last resort (difficulty 1) gets many more attempts so we always return something
     const cap = d === 1 ? maxAttempts * 10 : maxAttempts;
     const vcap = d === 1 ? maxVerified * 10 : maxVerified;
     let verified = 0;
     for (let a = 0; a < cap && verified < vcap; a++) {
       attempts++;
+      curTemplate = '';
       const t0 = o.reasons ? performance.now() : 0;
-      const r = rngOf(hash(seed, requested, d, a));
+      const salt = heroMode ? (gravity ? 0x69 : 0x68) : gravity ? 0x67 : 0;
+      const r = rngOf(salt ? hash(seed, requested, d, a, salt) : hash(seed, requested, d, a));
       let buildFail = 'build';
-      const level = attempt(r, d, p, (key) => ((buildFail = key), null));
+      const onFail = (key: string) => ((buildFail = key), null);
+      const level = heroMode
+        ? gravity
+          ? attemptGravityHero(r, d, p as GravityParams, onFail)
+          : attemptHero(r, d, p as DifficultyParams, onFail)
+        : gravity
+          ? attemptGravity(r, d, p as GravityParams, onFail)
+          : attempt(r, d, p as DifficultyParams, onFail);
       if (!level) {
         why(buildFail, t0);
         continue;
       }
-      level.id = `gen-${requested}-${seed}`;
-      level.name = `Random ${requested}-${seed}`;
+      const template = (level as { template?: string }).template;
+      const intents = (level as { intents?: Intent[] }).intents;
+      delete (level as { template?: string }).template;
+      delete (level as { intents?: Intent[] }).intents;
+      curTemplate = template ?? '';
+      const tag = `${requested}${gravity ? 'g' : ''}${heroMode ? 'h' : ''}-${seed}`;
+      level.id = `gen-${tag}`;
+      level.name = `Random ${tag}`;
       if (validateLevel(level).length) {
         why('invalid', t0);
         continue;
       }
       const greedy = greedySolve(level);
-      if (p.greedyMustFail && greedy >= 0) {
+      // trigger stacks are about reading the thaw counts, not search depth: the naive player
+      // gate and the drag minimum are relaxed for them
+      const trig = !!template?.includes('trig');
+      if (p.greedyMustFail && greedy >= 0 && !trig) {
         why('greedy', t0);
         continue;
       }
-      if (!p.greedyMustFail && greedy >= 0 && greedy < p.minDrags) {
+      if (!p.greedyMustFail && greedy >= 0 && greedy < p.minDrags && !trig) {
         why('greedyShort', t0);
         continue;
       }
@@ -737,7 +1438,8 @@ export function generateLevelWithStats(seed: number, opts: number | GenerateOpti
       const status = { reason: '' };
       let win: { plan: SolveResult; steps: number } | null = null;
       const fails: string[] = [];
-      for (const cand of candidatePlans(level, p, maxStates, k, hash(seed, d, a), status)) {
+      const window = trig ? { minDrags: Math.min(p.minDrags, d >= 6 ? 3 : 2), maxDrags: p.maxDrags } : p;
+      for (const cand of candidatePlans(level, window, maxStates, k, hash(seed, d, a), status, intents)) {
         if (!fails.length) verified++;
         replays++;
         const sim = replayInSim(level, cand.path);
@@ -761,7 +1463,7 @@ export function generateLevelWithStats(seed: number, opts: number | GenerateOpti
       const hint = makeHint(level);
       if (hint) level.hint = hint;
       const solution: SolveResult = { ...win.plan, moves: win.plan.path.length };
-      return { level, difficulty: d, attempts, solution, greedy, replays, simSteps: win.steps };
+      return { level, difficulty: d, attempts, solution, greedy, replays, simSteps: win.steps, ...(template ? { template } : {}) };
     }
   }
   throw new Error(`generateLevel: no level found for seed ${seed}`);
@@ -775,6 +1477,29 @@ export function generateLevel(seed: number, opts: number | GenerateOptions): Lev
 
 function makeHint(level: LevelDef): string | undefined {
   const frozen = level.boxes.some((b) => b.frozen);
+  if (level.hero) {
+    const parts = ['Walk into a box to push it; it moves away from you.'];
+    if (level.boxGravity) parts.push('You fall and climb one step. Push boxes off the edge into the pit in band order, or under a sand box to catch.');
+    else parts.push('A box under a sand box catches the bottom layer; beside it, the layer at its height.');
+    if (frozen) parts.push('Frozen boxes are walls until enough boxes pop.');
+    return parts.join(' ');
+  }
+  if (level.boxGravity) {
+    const tray = level.sandBoxes.some((sb) => sb.h === 1 && sb.y === level.height - 1 && sb.layers.length > 1);
+    const parts = ['Boxes fall here.'];
+    const H = level.height;
+    const trigger = level.boxes.some(
+      (b) => b.frozen && b.y === H - 1 && level.sandBoxes.some((sb) => sb.h === 1 && sb.y === H - 1 && (sb.x === b.x + 1 || sb.x + sb.w === b.x)),
+    );
+    if (trigger) {
+      parts.push('The shaft is already loaded in order. Its ice blocks hold the stack: pop boxes elsewhere to thaw them, and the stack drains in stages.');
+      return parts.join(' ');
+    }
+    if (tray) parts.push('Only the bottom box of a shaft touches its tray and drinks the top band: load the shaft in band order.');
+    else parts.push('Rest a box on the ledge right under a sand box to catch its bottom layer.');
+    if (frozen) parts.push('Ice thaws after the shown number of pops.');
+    return parts.join(' ');
+  }
   const buried = hasBuriedLayer(level);
   if (frozen && buried) return 'Ice thaws after the shown number of pops. Sand flows into boxes underneath or beside it.';
   if (frozen) return 'Ice thaws after the shown number of pops.';
@@ -789,11 +1514,13 @@ export function generateDailySeed(date: Date = new Date()): number {
 
 const LETTERS: Record<number, string> = { 1: 'R', 2: 'O', 3: 'Y', 4: 'G', 5: 'T', 6: 'B', 7: 'I', 8: 'P', 9: 'K', 10: 'N', 11: 'W', 12: 'X' };
 
-/** ASCII map for debugging: '#' sand box (digits when several), capital letter = box color,
+/** ASCII map for debugging: a header line (`<id> WxH`, plus `gravity` for box-gravity levels),
+ *  then the board: '#' sand box (digits when several), '=' wall, capital letter = box color,
  *  lower-case = frozen box (counter listed below), '.' empty. Sand box layers are listed
  *  bottom-first. */
 export function describeLevel(level: LevelDef): string {
   const g: string[][] = Array.from({ length: level.height }, () => new Array(level.width).fill('.'));
+  for (const w of level.walls ?? []) if (g[w.y]?.[w.x] !== undefined) g[w.y][w.x] = '=';
   level.sandBoxes.forEach((s, k) => {
     for (let y = s.y; y < s.y + s.h; y++) for (let x = s.x; x < s.x + s.w; x++) g[y][x] = level.sandBoxes.length > 1 ? String(k + 1) : '#';
   });
@@ -801,7 +1528,8 @@ export function describeLevel(level: LevelDef): string {
     const ch = LETTERS[b.color] ?? '?';
     for (const c of SHAPES[b.shape]) g[b.y + c.y][b.x + c.x] = b.frozen ? ch.toLowerCase() : ch;
   }
-  const lines = g.map((row) => row.join(' '));
+  if (level.hero && g[level.hero.y]?.[level.hero.x] !== undefined) g[level.hero.y][level.hero.x] = '@';
+  const lines = [`${level.id || 'level'} ${level.width}x${level.height}${level.boxGravity ? ' gravity' : ''}${level.hero ? ' hero' : ''}`, ...g.map((row) => row.join(' '))];
   level.sandBoxes.forEach((s, k) => {
     const ls = s.layers.map((l) => `${LETTERS[l.color] ?? '?'}${l.amount}`).join(' ');
     lines.push(`sand ${level.sandBoxes.length > 1 ? k + 1 : '#'} ${s.w}x${s.h} @${s.x},${s.y}: ${ls} (bottom first)`);

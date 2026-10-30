@@ -32,6 +32,7 @@ export {
   connectedGroups,
   boxGroup,
   OCC_WALL,
+  OCC_HERO,
   shakeBox,
 } from './grid';
 export { gameSpace, invalidateSpace, applyPull, chainPush } from './transfer';
@@ -39,3 +40,6 @@ export type { GameSpace, Puller } from './transfer';
 export { createGame, stepGame, checkCompletions, boxComplete, dissolvedGrains } from './game';
 export { applyConveyors, buildConveyor, conveyorAtCell, conveyorPlan, riderNextFree, DIR_VEC } from './conveyors';
 export { applyBoxGravity, boxSupported, fallPlan } from './gravity';
+export { moveHero, heroGravity, heroSupported, heroCellFree } from './hero';
+export { snapshotState, restoreState } from './snapshot';
+export type { GameSnapshot } from './snapshot';

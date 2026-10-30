@@ -17,6 +17,30 @@ function fallPlanOf(state: GameState): Set<number> | null {
     return null;
   }
 }
+/** Will the hero fall on the next fall step? Uses the core's helper when present. */
+function heroWillFall(state: GameState, falls: Set<number> | null): boolean {
+  const h = state.hero;
+  if (!h || !state.boxGravity) return false;
+  const f = coreAny.heroWillFall;
+  if (typeof f === 'function') {
+    try {
+      return !!(f as (s: GameState) => boolean)(state);
+    } catch {
+      /* fall through to the local check */
+    }
+  }
+  const x = h.x;
+  const y = h.y + 1;
+  if (y >= state.height) return false;
+  for (const w of state.walls ?? []) if (w.x === x && w.y === y) return false;
+  for (const sb of state.sandBoxes) if (x >= sb.x && x < sb.x + sb.w && y >= sb.y && y < sb.y + sb.h) return false;
+  for (const b of state.boxes) {
+    if (b.state !== 'active') continue;
+    for (const c of b.cells) if (b.x + c.x === x && b.y + c.y === y) return !!falls && falls.has(b.id);
+  }
+  return true;
+}
+
 function boxFallInterval(): number {
   const v = coreAny.BOX_FALL_INTERVAL;
   return typeof v === 'number' && v > 0 ? v : 4;
@@ -98,6 +122,10 @@ const BELT_SPACING = 0.5;
 const NUDGE_CELLS = 0.045;
 const NUDGE_WINDOW = 0.2; // last fraction of the belt period
 const EMPTY_PLAN: Map<number, Dir> = new Map();
+/** Effect target id used for the hero (box ids are >= 0). */
+const HERO_ID = -1;
+/** Hero walk glide: one cell in ~90 ms. */
+const HERO_WALK_SPEED = 1 / 0.09;
 /** A belt looks "busy" for this long after it moved a box. */
 const BELT_ACTIVE_MS = 300;
 
@@ -286,6 +314,8 @@ export class Renderer {
   private lastState: GameState | null = null;
   /** Last time each conveyor moved a box (performance.now ms). */
   private beltActiveAt = new Map<number, number>();
+  /** Drawn hero position (grid units) and the speed allowance carried out of a fall. */
+  private heroPos: { rx: number; ry: number; carry: number } | null = null;
   /** Most recent pop effect (to merge a group's simultaneous pops into it). */
   private lastPop: Extract<Effect, { kind: 'pop' }> | null = null;
   /** Union outlines of the wall cells for the current state (rebuilt on state change). */
@@ -346,6 +376,7 @@ export class Renderer {
   /** Forget animated positions (call on level load so boxes snap into place). */
   reset(): void {
     this.positions.clear();
+    this.heroPos = null;
   }
 
   /** CSS pixel (relative to canvas top-left) -> fractional grid coordinates. */
@@ -400,6 +431,7 @@ export class Renderer {
     if (state !== this.lastState) {
       this.lastState = state;
       this.positions.clear();
+      this.heroPos = null;
       this.beltActiveAt.clear();
       this.beltCells.clear();
       this.wallLoops = outlineLoops(state.walls ?? []);
@@ -512,6 +544,7 @@ export class Renderer {
     for (const g of groups) this.drawGroup(g, view, now);
     if (selBox) this.drawBox(selBox, view, now);
     if (dragBox) this.drawBox(dragBox, view, now);
+    if (state.hero) this.drawHero(state, view, now, dt, heroWillFall(state, falls) ? fallPhase : -1, fallI);
 
     this.drawEffects(view, now);
   }
@@ -551,6 +584,27 @@ export class Renderer {
         out.push({ kind: 'debris', t0: now, dur: DEBRIS_MS, color: ev.color, x: sb.x, y: sb.y, w: sb.w, h: sb.h, sparks });
       }
       return out;
+    }
+    if (ev.type === 'heroLanded' && state.hero) {
+      const k = Math.min(1, Math.max(1, ev.fell) / 6);
+      const sparks: Spark[] = [];
+      const per = Math.round(3 + 5 * k);
+      for (let i = 0; i < per; i++) {
+        const side = i % 2 ? 1 : -1;
+        const [r, g, bl] = grainRGBA(11, Math.floor(Math.random() * SHADE_COUNT));
+        sparks.push({
+          x: state.hero.x + 0.5 + side * (0.15 + Math.random() * 0.2),
+          y: state.hero.y + 0.95,
+          vx: side * (0.6 + Math.random() * 1.4) * (0.5 + k),
+          vy: -(0.2 + Math.random() * 0.8) * (0.5 + k),
+          size: 0.035 + Math.random() * 0.04,
+          rgb: `rgb(${r},${g},${bl})`,
+        });
+      }
+      return [
+        { kind: 'land', t0: now, dur: 110 + 60 * k, boxId: HERO_ID, amp: 0.06 + 0.1 * k },
+        { kind: 'dust', t0: now, dur: 260 + 200 * k, sparks },
+      ];
     }
     if (ev.type === 'boxLanded') {
       const box = state.boxes.find((b) => b.id === ev.boxId);
@@ -722,6 +776,86 @@ export class Renderer {
     ctx.strokeStyle = 'rgba(0,0,0,0.5)';
     ctx.lineWidth = Math.max(1, cs * 0.02);
     ctx.stroke(path);
+  }
+
+  /**
+   * The hero: a small round character with eyes looking toward `facing`. Walks glide at constant
+   * speed with a little bob; falls glide with the box fall phase (fallPhase >= 0) and lock on like
+   * falling boxes; landing squashes it.
+   */
+  private drawHero(state: GameState, view: View, now: number, dt: number, fallPhase: number, fallI: number): void {
+    const h = state.hero!;
+    const cs = this.cellSize;
+    const ctx = this.ctx;
+    let p = this.heroPos;
+    if (!p) p = this.heroPos = { rx: h.x, ry: h.y, carry: 0 };
+    const falling = fallPhase >= 0;
+    const tx = h.x;
+    const ty = h.y + (falling ? fallPhase : 0);
+    const speed = falling ? 1.6 * (60 / fallI) : Math.max(HERO_WALK_SPEED, p.carry);
+    if (falling) p.carry = speed;
+    const step = speed * dt;
+    const move = (cur: number, tgt: number) => (Math.abs(tgt - cur) <= step ? tgt : cur + Math.sign(tgt - cur) * step);
+    p.rx = move(p.rx, tx);
+    p.ry = move(p.ry, ty);
+    if (p.rx === tx && p.ry === ty && !falling) p.carry = 0;
+    // Walk bob: hop while gliding between cells (not while falling).
+    const remaining = Math.min(1, Math.abs(tx - p.rx) + Math.abs(h.y - p.ry));
+    const bob = falling ? 0 : -0.09 * Math.sin(Math.PI * remaining);
+
+    const cx = this.originX + (p.rx + 0.5) * cs;
+    const cy = this.originY + (p.ry + 0.5 + bob) * cs;
+    const R = cs * 0.34;
+    const sq = this.squashOf(HERO_ID, view, now);
+
+    // Ground shadow (stays on the ground line during the bob).
+    ctx.save();
+    ctx.globalAlpha = 0.28 * (1 + bob * 3);
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.ellipse(cx, this.originY + (p.ry + 0.5) * cs + R * 0.98, R * 0.78, R * 0.18, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    ctx.save();
+    const foot = cy + R;
+    ctx.translate(cx, foot);
+    ctx.scale(1 + (1 - sq) * 0.7, sq);
+    ctx.translate(-cx, -foot);
+    // Body.
+    const g = ctx.createRadialGradient(cx - R * 0.35, cy - R * 0.4, R * 0.1, cx, cy, R);
+    g.addColorStop(0, '#fff1cf');
+    g.addColorStop(0.55, '#ffd27e');
+    g.addColorStop(1, '#e9a24a');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.lineWidth = Math.max(1.5, cs * 0.035);
+    ctx.strokeStyle = 'rgba(60,36,10,0.85)';
+    ctx.stroke();
+    // Eyes look toward `facing`.
+    const [fx, fy] = DIR_VEC[h.facing ?? 'down'];
+    const side = fx !== 0;
+    const look = R * 0.38;
+    const sep = side ? R * 0.26 : R * 0.34;
+    const ex = cx + fx * look;
+    const ey = cy + fy * look * 0.7 - (side ? R * 0.12 : 0);
+    const eyes = side ? [ex - sep / 2 * 1, ex + sep / 2 * 1] : [ex - sep, ex + sep];
+    for (const x of eyes) {
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.ellipse(x, ey, R * 0.2, R * 0.24, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.lineWidth = Math.max(1, cs * 0.015);
+      ctx.strokeStyle = 'rgba(60,36,10,0.5)';
+      ctx.stroke();
+      ctx.fillStyle = '#1f1a14';
+      ctx.beginPath();
+      ctx.arc(x + fx * R * 0.07, ey + fy * R * 0.08, R * 0.11, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
   }
 
   private drawBoard(): void {

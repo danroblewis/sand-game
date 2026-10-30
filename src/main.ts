@@ -7,6 +7,10 @@ import { Renderer, createView } from './render/renderer';
 import { attachPointer } from './input/pointer';
 import { attachKeyboard, fixSelection } from './input/keyboard';
 import { Hud } from './ui/hud';
+import { HeroInput, heroApi } from './input/hero';
+import type { Dir } from './core/types';
+import { gravityFor } from './ui/progress';
+import type { GenerateOptions } from './levels/generate';
 
 const STEP_MS = 1000 / 60;
 const MAX_STEPS_PER_FRAME = 4;
@@ -20,9 +24,18 @@ const hud = new Hud(app, {
   onNext: () => next(),
   onSelectLevel: (i) => loadLevel(i),
   onNewRandom: () => newRandom(),
-  onPlayRandom: (d) => loadRandom(d, freshSeed()),
-  onPlayDaily: (d) => loadRandom(d, generateDailySeed()),
-  onPlaySeed: (d, seed) => loadRandom(d, seed),
+  onPlayRandom: (d) => {
+    const seed = freshSeed();
+    loadRandom(d, seed, gravityFor(hud.randomMode, seed), hud.randomHero);
+  },
+  onPlayDaily: (d) => {
+    const seed = generateDailySeed();
+    loadRandom(d, seed, gravityFor(hud.randomMode, seed), hud.randomHero);
+  },
+  onPlaySeed: (d, seed, gravity, hero) =>
+    loadRandom(d, seed, gravity ?? gravityFor(hud.randomMode, seed), hero ?? hud.randomHero),
+  onUndo: () => undo(),
+  onHeroMove: (d) => heroKey(d),
 });
 hud.setLevels(LEVELS);
 hud.setDailySeed(generateDailySeed());
@@ -31,7 +44,9 @@ const renderer = new Renderer(hud.canvas);
 const view = createView();
 
 /** What is being played: a handmade campaign level or a generated one. */
-type Mode = { kind: 'campaign'; index: number } | { kind: 'random'; difficulty: number; seed: number };
+type Mode =
+  | { kind: 'campaign'; index: number }
+  | { kind: 'random'; difficulty: number; seed: number; gravity: boolean; hero: boolean };
 
 let mode: Mode = { kind: 'campaign', index: 0 };
 let currentLevel: LevelDef | null = null;
@@ -51,8 +66,47 @@ function freshSeed(): number {
   return 1 + Math.floor(Math.random() * 99999);
 }
 
+// ---------- Hero (pusher) levels: moves with undo ----------
+const UNDO_CAP = 200;
+let undoStack: unknown[] = [];
+
+/** One hero input. Snapshot first; keep it on the undo stack only if the move happened. */
+function heroStep(dir: Dir): boolean {
+  const move = heroApi.moveHero;
+  if (!state || !state.hero || !move || hud.busy || hud.pickerOpen) return false;
+  const snap = heroApi.snapshot?.(state);
+  const ok = !!move(state, dir);
+  if (ok && snap !== undefined) {
+    undoStack.push(snap);
+    if (undoStack.length > UNDO_CAP) undoStack.shift();
+    hud.setUndoCount(undoStack.length);
+  }
+  return ok;
+}
+
+/** Keyboard / d-pad move: cancels a tap-to-walk in progress. */
+function heroKey(dir: Dir): void {
+  heroInput.cancel();
+  heroStep(dir);
+}
+
+function undo(): void {
+  const restore = heroApi.restore;
+  if (!state || !state.hero || !restore || undoStack.length === 0) return;
+  heroInput.cancel();
+  restore(state, undoStack.pop());
+  state.events.length = 0;
+  view.effects.length = 0;
+  renderer.reset(); // snap to the restored positions
+  window.clearTimeout(winTimer);
+  hud.hideWin();
+  hud.setUndoCount(undoStack.length);
+}
+
 /** Start (or restart) playing a level definition. */
 function startLevel(def: LevelDef): void {
+  undoStack = [];
+  heroInput?.cancel();
   currentLevel = def;
   state = createGame(def, newSeed());
   view.selectedBoxId = null;
@@ -77,18 +131,36 @@ function loadLevel(i: number): void {
 }
 
 /** Generate and play a random level. Shows a "Building level…" state while generating. */
-function loadRandom(difficulty: number, seed: number): void {
+/**
+ * Generate a level. Floating levels pass the plain difficulty (works with every generator version);
+ * gravity levels pass `{ difficulty, gravity: true }`. An older generator that ignores the flag
+ * yields a floating level, which is then shown and linked as floating.
+ */
+function generate(seed: number, difficulty: number, gravity: boolean, hero: boolean): LevelDef {
+  if (!gravity && !hero) return generateLevel(seed, difficulty);
+  return generateLevel(seed, genOpts(difficulty, gravity, hero));
+}
+
+/** Options object for gravity/hero levels (`hero` may not be known to an older generator). */
+function genOpts(difficulty: number, gravity: boolean, hero: boolean): GenerateOptions {
+  const o: Record<string, unknown> = { difficulty };
+  if (gravity) o.gravity = true;
+  if (hero) o.hero = true;
+  return o as unknown as GenerateOptions;
+}
+
+function loadRandom(difficulty: number, seed: number, gravity = false, hero = false): void {
   difficulty = Math.max(1, Math.min(10, Math.round(difficulty)));
   seed = Math.max(0, Math.min(0x7fffffff, Math.floor(seed)));
   const token = ++buildToken;
-  hud.showBuilding(`Building level… (difficulty ${difficulty})`);
+  hud.showBuilding(`Building level… (difficulty ${difficulty}${gravity ? ', gravity' : ''}${hero ? ', pusher' : ''})`);
   // Let the overlay paint before the (synchronous, up to ~1 s) generation.
   requestAnimationFrame(() =>
     window.setTimeout(() => {
       if (token !== buildToken) return;
       let def: LevelDef;
       try {
-        def = generateLevel(seed, difficulty);
+        def = generate(seed, difficulty, gravity, hero);
       } catch (err) {
         console.error(err);
         hud.showBuilding('Could not build that level. Try another seed.');
@@ -96,7 +168,9 @@ function loadRandom(difficulty: number, seed: number): void {
         return;
       }
       if (token !== buildToken) return;
-      mode = { kind: 'random', difficulty, seed };
+      // What was actually generated decides the title and the link (an older generator may ignore
+      // the hero/gravity flags).
+      mode = { kind: 'random', difficulty, seed, gravity: !!def.boxGravity, hero: !!def.hero };
       hud.setRandomLevel(def, difficulty, seed);
       startLevel(def);
       setHash(def.id);
@@ -114,7 +188,8 @@ function restart(): void {
 
 function newRandom(): void {
   const d = mode.kind === 'random' ? mode.difficulty : hud.difficulty;
-  loadRandom(d, freshSeed());
+  const seed = freshSeed();
+  loadRandom(d, seed, gravityFor(hud.randomMode, seed), hud.randomHero);
 }
 
 function next(): void {
@@ -136,12 +211,12 @@ function setHash(h: string): void {
 /** Load whatever the hash names. Returns false if it names nothing loadable. */
 function loadFromHash(): boolean {
   const h = decodeURIComponent(location.hash.slice(1));
-  const g = /^gen-(\d{1,2})-(\d{1,10})$/.exec(h);
+  const g = /^gen-(\d{1,2})(g?)(h?)-(\d{1,10})$/.exec(h);
   if (g) {
     const d = Number(g[1]);
-    const seed = Number(g[2]);
+    const seed = Number(g[4]);
     if (d >= 1 && d <= 10 && seed <= 0x7fffffff) {
-      loadRandom(d, seed);
+      loadRandom(d, seed, g[2] === 'g', g[3] === 'h');
       return true;
     }
   }
@@ -198,8 +273,9 @@ attachKeyboard({
   getState: () => state,
   view,
   isBlocked: blocked,
-  actions: { restart, next, prev, isRandom: () => mode.kind === 'random' },
+  actions: { restart, next, prev, isRandom: () => mode.kind === 'random', heroMove: heroKey, undo },
 });
+const heroInput: HeroInput = new HeroInput({ canvas: hud.canvas, renderer, getState: () => state, step: heroStep, isBlocked: blocked });
 
 // ---------- Layout ----------
 // Side-by-side HUD for short landscape screens (phones); must match the media query in style.css.
@@ -212,6 +288,7 @@ function layout(): void {
   document.documentElement.style.setProperty('--app-h', `${h}px`);
   if (state) renderer.setBoardSize(state.width, state.height);
   const wrap = hud.boardWrap;
+  hud.placeDpad(landscapeMq.matches);
   if (landscapeMq.matches) {
     wrap.style.height = '';
   } else {
@@ -311,7 +388,9 @@ window.__game = {
   core: { moveBoxToward, tryMoveBox },
   /** Debug: the generator's solution path for the current random level ("box#i -> (x,y)"). */
   solution(): string[] | null {
-    return mode.kind === 'random' ? generateLevelWithStats(mode.seed, mode.difficulty).solution.path : null;
+    if (mode.kind !== 'random') return null;
+    const m = mode;
+    return generateLevelWithStats(m.seed, m.gravity || m.hero ? genOpts(m.difficulty, m.gravity, m.hero) : m.difficulty).solution.path;
   },
   view,
   renderer,
@@ -319,10 +398,19 @@ window.__game = {
   levels: LEVELS,
   loadLevel,
   restart,
+  heroStep,
+  undo,
+  get undoDepth() {
+    return undoStack.length;
+  },
+  heroInput: () => heroInput,
   /** Debug: play an arbitrary LevelDef without changing the level index. */
   playLevel(def: LevelDef) {
     window.clearTimeout(winTimer);
     hud.hideWin();
+    undoStack = [];
+    heroInput.cancel();
+    hud.showLevelChrome(def); // badges / undo button only; progress is untouched
     state = createGame(def, newSeed());
     view.selectedBoxId = view.dragBoxId = view.hoverBoxId = null;
     view.effects.length = 0;

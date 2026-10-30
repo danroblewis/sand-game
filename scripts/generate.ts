@@ -1,4 +1,6 @@
 // CLI: npx vite-node scripts/generate.ts <difficulty> <count> [startSeed] [flags]
+//   --gravity   box-gravity levels (shafts, trays, ledges)
+//   --hero      hero (Sokoban) levels: solutions are U/D/L/R input strings, drags = pushes
 //   --quiet     only print the summary (and failing levels)
 //   --replay    re-check: replay each accepted solution through the real simulation again
 //               (redundant: acceptance already requires a physics win; this guards determinism)
@@ -125,6 +127,7 @@ if (flags.has('--calibrate')) {
 }
 
 const reasons: Record<string, number> = {};
+const templates: Record<string, number> = {};
 let totalAttempts = 0;
 let totalMs = 0;
 let maxMs = 0;
@@ -139,7 +142,8 @@ let replaysTotal = 0;
 const simSecs: number[] = [];
 for (let seed = start; seed < start + count; seed++) {
   const t0 = performance.now();
-  const res = generateLevelWithStats(seed, { difficulty, reasons });
+  const res = generateLevelWithStats(seed, { difficulty, reasons, gravity: flags.has('--gravity'), hero: flags.has('--hero') });
+  if (res.template) templates[res.template] = (templates[res.template] ?? 0) + 1;
   replaysTotal += res.replays;
   simSecs.push(res.simSteps / 60);
   const ms = performance.now() - t0;
@@ -164,7 +168,7 @@ for (let seed = start; seed < start + count; seed++) {
   if (!quiet || rep) {
     console.log(
       `\n== ${res.level.id} (${res.level.width}x${res.level.height}) drags=${res.solution.moves} greedy=${res.greedy} ` +
-        `attempts=${res.attempts} replays=${res.replays} sim=${(res.simSteps / 60).toFixed(0)}s gatesAt=${res.difficulty} ${ms.toFixed(0)}ms${replay ? (rep ? ` REPLAY FAIL: ${rep}` : ' replay=win') : ''}`,
+        `attempts=${res.attempts} replays=${res.replays} sim=${(res.simSteps / 60).toFixed(0)}s gatesAt=${res.difficulty}${res.template ? ` template=${res.template}` : ''} ${ms.toFixed(0)}ms${replay ? (rep ? ` REPLAY FAIL: ${rep}` : ' replay=win') : ''}`,
     );
     console.log(describeLevel(res.level));
     if (res.level.hint) console.log(`hint: ${res.level.hint}`);
@@ -182,4 +186,14 @@ console.log(
     `${replay ? `, re-check failures ${replayFails}, re-check mean ${(simMs / count).toFixed(0)}ms` : ''}` +
     `${seedRuns ? `, other sim seeds win ${seedWins}/${seedRuns}` : ''}`,
 );
-console.log('rejections: ' + JSON.stringify(reasons));
+const per = Object.entries(reasons).filter(([k]) => k.startsWith('@') && !k.endsWith('Ms'));
+console.log('rejections: ' + JSON.stringify(Object.fromEntries(Object.entries(reasons).filter(([k]) => !k.startsWith('@')))));
+if (per.length) {
+  const byT: Record<string, Record<string, number>> = {};
+  for (const [k, n] of per) {
+    const [t, r] = k.slice(1).split(':');
+    (byT[t] ??= {})[r] = n;
+  }
+  for (const [t, rs] of Object.entries(byT)) console.log(`  template ${t}: ${JSON.stringify(rs)}`);
+}
+if (Object.keys(templates).length) console.log('templates: ' + JSON.stringify(templates));

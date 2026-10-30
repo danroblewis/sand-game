@@ -108,9 +108,20 @@ const wrow = (y: number, x0: number, x1: number): [number, number][] =>
 //   * Wall off every tray side a box could reach from the floor, or it is a second (bypass) contact.
 //   * Debris still matters: a floating sand box's leftover of a color blocks its next catch while
 //     another box of that color is on the board; give each floating sand box its own colors.
+// - HERO (chapter 3 "Pusher", physics-lab HA, the levels themselves): solutions are U/D/L/R strings,
+//   6 sim steps per input, settle after each string. A push moves one box one cell; a box only catches
+//   when it ends right under / beside the sand, but it does drink on the way for the steps it spends
+//   beside a sand box (start boxes away from sides they slide past). A box against a wall or the
+//   board edge can never be pulled back: check every push direction is still possible
+//   (scripts/hero-plan.ts searches input strings for a goal). Gravity: walking into a box pushes it if it can move, else climbs
+//   it (one cell, the cell above the hero must be free); up/down do nothing. The hero holds up the
+//   boxes above him, rides a shaft down when a pin he pushed was his floor, and falls when the box he
+//   stands on pops. A step box pushed against a wall is stuck for good, so it must drain where it
+//   stands, and never beside a buried band of its own color (it wedges and jams the tray): lean it on
+//   a frozen box instead and let it slide into the frozen box's place after the thaw.
 // Map legend in the level comments: # sand box, capital letter = box (R red, O orange, Y yellow,
 // G green, T teal, B blue, P purple, K pink, W white), lower-case = frozen box, ^ v < > = empty belt
-// cell running in that direction, = wall, . empty.
+// cell running in that direction, = wall, @ hero, . empty.
 
 export const LEVELS: LevelDef[] = [
   //   . . . . . .
@@ -901,6 +912,349 @@ export const LEVELS: LevelDef[] = [
       'box#5 -> (3,0)',
       'box#0 -> (6,1)',
     ],
+  },
+  // ---- Chapter 3: Pusher (hero / Sokoban) ----
+  //   . . # # . .
+  //   . . # # . .
+  //   . . . . . .
+  //   . . . . . .
+  //   . . B B . .
+  //   . . @ . . .
+  //   . . . R R .
+  //   . . . . . .
+  // Solution: Push the blue bar up under the sand box (blue is the bottom layer), then walk round
+  // and push the red bar left and up into the same spot.
+  {
+    id: 'first-push',
+    name: 'First Push',
+    width: 6,
+    height: 8,
+    hero: { x: 2, y: 5 },
+    sandBoxes: [sb(2, 0, 2, 2, [[B, 2], [R, 2]])],
+    boxes: [bx('2x1', 2, 4, B), bx('2x1', 3, 6, R)],
+    hint: 'Walk into a box to push it. Push the blue up under the sand box first: from below only the bottom layer falls in.',
+    solution: ['UU', 'RRRDDDL', 'DLLUUUU'],
+  },
+  //   . . . . = = .
+  //   . . . . = . .
+  //   . . # # . Y .
+  //   . . # # . Y .
+  //   . . . . . . .
+  //   . . G G . = =
+  //   . . . . . . .
+  //   @ . . . . . .
+  // Solution: Walk round to the right of the yellow 1x2 and push it against the sand box at the yellow
+  // (top) layer; then get under the green bar and push it up to catch the green from below.
+  {
+    id: 'far-side',
+    name: 'Far Side',
+    width: 7,
+    height: 8,
+    hero: { x: 0, y: 7 },
+    sandBoxes: [sb(2, 2, 2, 2, [[G, 2], [Y, 2]])],
+    walls: wl([4, 0], [4, 1], [5, 0], [5, 5], [6, 5]),
+    boxes: [bx('1x2', 5, 2, Y), bx('2x1', 2, 5, G)],
+    hint: 'A box moves away from you, so stand on its far side. Push the yellow against the sand box at the yellow layer, then the green up from below.',
+    solution: ['UUURRRRRRUL', 'DLDDLU'],
+  },
+  //   # # . = . # #
+  //   # # . = . # #
+  //   . . . . . . .
+  //   . . . . . . .
+  //   . . . . . . .
+  //   . B B . R R .
+  //   . B . . . R .
+  //   . B . . . R .
+  //   . . . @ . . .
+  // Solution: The two hooks start on the wrong sides. Push the blue J up and over to the right sand box,
+  // then the red L to the left one; each catches with its 2-wide bar.
+  {
+    id: 'odd-shapes',
+    name: 'Odd Shapes',
+    width: 7,
+    height: 9,
+    hero: { x: 3, y: 8 },
+    sandBoxes: [sb(0, 0, 2, 2, [[R, 4]]), sb(5, 0, 2, 2, [[B, 4]])],
+    walls: wl([3, 0], [3, 1]),
+    boxes: [bx('L180', 4, 5, R), bx('J180', 1, 5, B)],
+    hint: 'A shape moves as a whole, and you can push it from any of its cells. Swap the two hooks: each one catches under its own color with its bar.',
+    solution: ['LLUUULURRRR', 'RRDDDLLLLDLUUU'],
+  },
+  //   = = = = = . # #
+  //   = . . . . . # #
+  //   . . = = . . . .
+  //   . R R . B . . .
+  //   = . . . B . . =
+  //   . . . . = . . =
+  //   . @ . = . = . .
+  //   . . . = . . . .
+  // Solution: Route the blue 1x2 round the walls to the right column and up beside the blue layer,
+  // then bring the red bar under the sand box. Pushing either into a corner early is fatal.
+  {
+    id: 'dead-ends',
+    name: 'Dead Ends',
+    width: 8,
+    height: 8,
+    hero: { x: 1, y: 6 },
+    sandBoxes: [sb(6, 0, 2, 2, [[R, 2], [B, 2]])],
+    walls: wl([0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [0, 1], [2, 2], [3, 2], [4, 5], [5, 6], [0, 4], [3, 6], [3, 7], [7, 4], [7, 5]),
+    boxes: [bx('1x2', 4, 3, B), bx('2x1', 1, 3, R)],
+    hint: 'A box pushed into a corner or against a wall can never come back out. Plan the route before you push: blue goes beside the blue layer, red goes underneath.',
+    solution: ['UURRURURRDDDLUUU', 'ULLLLDLDRRRRRDRU'],
+  },
+  //   # # . = # # #
+  //   # # . = . . .
+  //   . . . = . . .
+  //   . . . = B B .
+  //   R R . w . . .
+  //   . . . = . . .
+  //   . @ . = . . .
+  //   . . . = . . .
+  // Solution: Push the red up under its sand box; the pop thaws the white plug in the doorway. Push
+  // it through into the right room, push the blue up under the blue, then the white up under the white.
+  {
+    id: 'cold-wall',
+    name: 'Cold Wall',
+    width: 7,
+    height: 8,
+    hero: { x: 1, y: 6 },
+    sandBoxes: [sb(0, 0, 2, 2, [[R, 2]]), sb(4, 0, 2, 1, [[B, 2]]), sb(6, 0, 1, 1, [[W, 1]])],
+    walls: wl(...wcol(3, 0, 3), ...wcol(3, 5, 7)),
+    boxes: [bx('2x1', 0, 4, R), bx('1x1', 3, 4, W, 1), bx('2x1', 4, 3, B)],
+    hint: 'The frozen box is a wall until something pops. Then it is just a box in the doorway: push it through, and mind where it ends up.',
+    solution: ['UUU', 'DRRRUU', 'DDRDRUUU'],
+  },
+  //   = # # . . # # =
+  //   . # # . . # # .
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . R R . . B B .
+  //   . R R . . B B .
+  //   = . . = = . . =
+  //   . . . @ . . . .
+  // Solution: The red 2x2 catches red under the left box, then drinks the right box's red top from the
+  // middle gap; the blue 2x2 then stands in the gap and drinks blue from both boxes at once.
+  {
+    id: 'shared-colors',
+    name: 'Shared Colors',
+    width: 8,
+    height: 8,
+    hero: { x: 3, y: 7 },
+    sandBoxes: [sb(1, 0, 2, 2, [[R, 2], [B, 2]]), sb(5, 0, 2, 2, [[B, 2], [R, 2]])],
+    walls: wl([0, 0], [7, 0], [0, 6], [7, 6], [3, 6], [4, 6]),
+    boxes: [bx('2x2', 1, 4, R), bx('2x2', 5, 4, B)],
+    hint: 'Each big box needs half its color from each sand box. A box keeps what it has caught, and a box standing between two sand boxes drinks from both.',
+    solution: ['LUUU', 'LLURRDRUU', 'DRRRRDDLDLUURULDLUU'],
+  },
+  //   . . . # # . . .
+  //   . . . # # = = .
+  //   . . . # # # # =
+  //   . . . . . . . .
+  //   . . . . = = = .
+  //   . G G . . G . .
+  //   . . . . . G . .
+  //   . B B . . G . .
+  //   @ . . . . . . .
+  // Solution: Hang the 1x3 under the sand box's left column, bring the green bar up the left side and
+  // push it in on top: the pair is one container and the 1x3 below fills first. Push the full 1x3
+  // away from its far side (it pops alone), the bar into the slot, and the blue under the blue.
+  {
+    id: 'join-and-split',
+    name: 'Join and Split',
+    width: 8,
+    height: 9,
+    hero: { x: 0, y: 8 },
+    sandBoxes: [sb(3, 0, 2, 3, [[G, 3.25], [B, 2]]), sb(5, 2, 2, 1, [[G, 1.75]])],
+    walls: wl([5, 1], [6, 1], [7, 2], [4, 4], [5, 4], [6, 4]),
+    boxes: [bx('2x1', 1, 5, G), bx('1x3', 5, 5, G), bx('2x1', 1, 7, B)],
+    hint: 'Touching boxes of one color are one container and pop only when the whole group is full. Join them under the sand box, then push the full one away from the far side.',
+    solution: ['RRRRRRULLDLU', 'DLLLUURUULU', 'RR', 'DDDLLDDRRRURUL', 'UULURR', 'LDDDDDLUUUULLU', 'RR'],
+  },
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . . . . Y . . .
+  //   . . . = = = . .
+  //   @ # w = = = . #
+  // Solution: Walk right: climb the tray and the frozen white, climb the ledge, push the yellow off
+  // onto its tray. The pop thaws the white, which drains its tray where it stands.
+  {
+    id: 'step-up',
+    name: 'Step Up',
+    width: 8,
+    height: 8,
+    hero: { x: 0, y: 7 },
+    boxGravity: true,
+    sandBoxes: [sb(1, 7, 1, 1, [[W, 1]]), sb(7, 7, 1, 1, [[Y, 1]])],
+    walls: wl(...wrow(6, 3, 5), ...wrow(7, 3, 5)),
+    boxes: [bx('1x1', 2, 7, W, 1), bx('1x1', 4, 5, Y)],
+    hint: 'Now you fall, and you climb one step at a time: walk into anything one cell high. Push the yellow off the ledge onto its sand.',
+    solution: ['RRRRR'],
+  },
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . . . . R . . .
+  //   . . . . O . . .
+  //   . . . . Y . . @
+  //   . . . . = = = =
+  //   = = = . = = = =
+  //   # # # . = = = =
+  // Solution: Push the tower's bottom box into the shaft, step back so the tower drops (you hold up
+  // whatever is above you), push again: yellow, orange, red land on the tray in band order.
+  {
+    id: 'topple',
+    name: 'Topple',
+    width: 8,
+    height: 8,
+    hero: { x: 7, y: 4 },
+    boxGravity: true,
+    sandBoxes: [sb(0, 7, 3, 1, [[R, 1], [O, 1], [Y, 1]])],
+    walls: wl(...wrow(5, 4, 7), ...wrow(6, 4, 7), ...wrow(7, 4, 7), [0, 6], [1, 6], [2, 6]),
+    boxes: [bx('1x1', 4, 4, Y), bx('1x1', 4, 3, O), bx('1x1', 4, 2, R)],
+    hint: 'Push the bottom of the tower off the ledge: it drops down the shaft. Whatever is above you stays up while you stand under it, so step back to let the tower drop.',
+    solution: ['LLL', 'R', 'L', 'R', 'L'],
+  },
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . . . . R . . #
+  //   . . = . O @ W .
+  //   . . = . = = = =
+  //   . . = . = = = =
+  //   = = = . = = = =
+  //   # # # y = = = =
+  // Solution: Topple orange and red into the shaft onto the frozen yellow plug, then push the white
+  // under its sand box: its pop thaws the plug and the shaft drains yellow, orange, red.
+  {
+    id: 'cold-trigger',
+    name: 'Cold Trigger',
+    width: 8,
+    height: 10,
+    hero: { x: 5, y: 5 },
+    boxGravity: true,
+    sandBoxes: [sb(0, 9, 3, 1, [[R, 1], [O, 1], [Y, 1]]), sb(7, 4, 1, 1, [[W, 1]])],
+    walls: wl(...wrow(8, 0, 2), ...wcol(2, 5, 7), ...wrow(6, 4, 7), ...wrow(7, 4, 7), ...wrow(8, 4, 7), ...wrow(9, 4, 7)),
+    boxes: [bx('1x1', 3, 9, Y, 1), bx('1x1', 4, 5, O), bx('1x1', 4, 4, R), bx('1x1', 6, 5, W)],
+    hint: 'The frozen plug holds the shaft shut until something pops. Load the shaft while it is cold, then pull the trigger.',
+    solution: ['L', 'R', 'L', 'R', 'R'],
+  },
+  //   . . . . . . . .
+  //   . . . = . . . .
+  //   . . = R = . . .
+  //   # . = O = . . .
+  //   # . P P . . . .
+  //   = = = . = . . .
+  //   . . = . = = . .
+  //   = = = . = . = @
+  //   # # # y . . . =
+  // Solution: Climb the stairs and push the pin left from its right side onto its purple sand. You
+  // ride the closet down onto the frozen yellow (thawed by the pin's pop) and hold the stack up;
+  // step out of the door and orange, red drop onto the tray.
+  {
+    id: 'push-the-pin',
+    name: 'Push the Pin',
+    width: 8,
+    height: 9,
+    hero: { x: 7, y: 7 },
+    boxGravity: true,
+    sandBoxes: [sb(0, 8, 3, 1, [[R, 1], [O, 1], [Y, 1]]), sb(0, 3, 1, 2, [[P, 2]])],
+    walls: wl(
+      [3, 1], [2, 2], [2, 3], [4, 2], [4, 3],
+      ...wcol(2, 5, 7), [0, 7], [1, 7], [0, 5], [1, 5],
+      ...wcol(4, 5, 7), [5, 6], [6, 7], [7, 8],
+    ),
+    boxes: [bx('2x1', 2, 4, P), bx('1x1', 3, 3, O), bx('1x1', 3, 2, R), bx('1x1', 3, 8, Y, 1)],
+    hint: 'Climb up and push the pin from its right side. You drop down the shaft with the closet on your head: you hold it up until you step out through the door.',
+    solution: ['LLLL', 'R'],
+  },
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . = . B . . . .
+  //   . = . G . . . .
+  //   . = . R . @ . .
+  //   = = . = = = = =
+  //   # # . = = = = =
+  //   = = . = = = = =
+  //   # # y = = = = =
+  // Solution: Topple red, green, blue onto the frozen plug. Green and blue drain the upper tray in
+  // turn, their two pops thaw the plug, which drains yellow, and red drops onto the lower tray.
+  {
+    id: 'chain-reaction',
+    name: 'Chain Reaction',
+    width: 8,
+    height: 10,
+    hero: { x: 5, y: 5 },
+    boxGravity: true,
+    sandBoxes: [sb(0, 9, 2, 1, [[R, 1], [Y, 1]]), sb(0, 7, 2, 1, [[B, 1], [G, 1]])],
+    walls: wl(...wrow(8, 0, 1), ...wrow(6, 0, 1), ...wcol(1, 3, 5), ...wrow(6, 3, 7), ...wrow(7, 3, 7), ...wrow(8, 3, 7), ...wrow(9, 3, 7)),
+    boxes: [bx('1x1', 2, 9, Y, 2), bx('1x1', 3, 5, R), bx('1x1', 3, 4, G), bx('1x1', 3, 3, B)],
+    hint: 'One shaft, two trays, and a frozen plug at the bottom. Load the shaft in the right order and it runs itself: every pop drops the stack a step.',
+    solution: ['LL', 'R', 'L', 'R', 'L'],
+  },
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . . . . . . Y .
+  //   . . . . . # = .
+  //   . . . . w # = .
+  //   . @ K . w # # .
+  // Solution: Push the pink step against the frozen white and climb onto the ledge; push the yellow
+  // off the right end and come straight back down onto the pink. The pop thaws the white, which drains
+  // and leaves; push the pink into its spot to drain the bottom band.
+  {
+    id: 'wrong-side',
+    name: 'Wrong Side',
+    width: 8,
+    height: 10,
+    hero: { x: 1, y: 9 },
+    boxGravity: true,
+    sandBoxes: [sb(5, 7, 1, 3, [[K, 1], [W, 2]]), sb(6, 9, 1, 1, [[Y, 1]])],
+    walls: wl([6, 7], [6, 8]),
+    boxes: [bx('1x1', 2, 9, K), bx('1x2', 4, 8, W, 1), bx('1x1', 6, 6, Y)],
+    hint: 'Push the pink step against the frozen box and climb. When the yellow pops the white thaws and melts away, so come back down on the pink side first: from the other side the step can only be pushed the wrong way.',
+    solution: ['RRRRRLLLL', 'R'],
+  },
+  //   . . . = . . . .
+  //   . . . B = . . .
+  //   . = = G = . . .
+  //   # = = R = . . .
+  //   # . P P . . . .
+  //   = = = . = . . .
+  //   = = = . = = . .
+  //   = = = . = . = @
+  //   = # # . = . . =
+  //   = = = . . . . .
+  //   = # # y = . . .
+  // Solution: Climb, push the pin left onto its sand and ride red, green, blue down onto the frozen
+  // plug. Step out of the door: green and blue drain the upper tray, the pin and those pops thaw the
+  // plug, yellow then red drain the lower tray.
+  {
+    id: 'pusher',
+    name: 'Pusher',
+    width: 8,
+    height: 11,
+    hero: { x: 7, y: 7 },
+    boxGravity: true,
+    sandBoxes: [
+      sb(0, 3, 1, 2, [[P, 2]]),
+      sb(1, 10, 2, 1, [[R, 1], [Y, 1]]),
+      sb(1, 8, 2, 1, [[B, 1], [G, 1]]),
+    ],
+    walls: wl(
+      [3, 0], [1, 2], [2, 2], [1, 3], [2, 3], [4, 1], [4, 2], [4, 3],
+      ...wcol(0, 5, 10), [1, 5], [2, 5], [1, 6], [2, 6], [1, 7], [2, 7], [1, 9], [2, 9],
+      ...wcol(4, 5, 8), [4, 10], [5, 6], [6, 7], [7, 8],
+    ),
+    boxes: [bx('2x1', 2, 4, P), bx('1x1', 3, 3, R), bx('1x1', 3, 2, G), bx('1x1', 3, 1, B), bx('1x1', 3, 10, Y, 3)],
+    hint: 'Push the pin from its right side and ride the closet down onto the frozen plug. You are the spacer: step out of the door when the stack should drop.',
+    solution: ['LLLL', 'RR'],
   },
 ];
 

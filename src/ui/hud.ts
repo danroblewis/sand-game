@@ -1,6 +1,6 @@
 // DOM HUD: level title, hint, moves, controls, level picker (campaign + random) and win overlay.
-import type { LevelDef } from '../core/types';
-import { loadProgress, recordRandomSolve, saveProgress, type Progress } from './progress';
+import type { Dir, LevelDef } from '../core/types';
+import { loadProgress, recordRandomSolve, saveProgress, type Progress, type RandomMode } from './progress';
 import { chapterRanges } from './chapters';
 
 export interface HudHandlers {
@@ -12,7 +12,12 @@ export interface HudHandlers {
   onNewRandom: () => void;
   onPlayRandom: (difficulty: number) => void;
   onPlayDaily: (difficulty: number) => void;
-  onPlaySeed: (difficulty: number, seed: number) => void;
+  /** `gravity` is set when the typed code names it (gen-7g-…); otherwise the picker mode decides. */
+  onPlaySeed: (difficulty: number, seed: number, gravity?: boolean, hero?: boolean) => void;
+  /** Hero levels: undo the last move. */
+  onUndo?: () => void;
+  /** Hero levels: one d-pad step. */
+  onHeroMove?: (dir: Dir) => void;
 }
 
 export type WinKind = 'next' | 'last' | 'random';
@@ -24,6 +29,9 @@ const ICONS = {
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v5h5"/></svg>',
   grid: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg>',
   down: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v14"/><path d="M6 12l6 6 6-6"/></svg>',
+  undo: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>',
+  hero: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="7"/><circle cx="14.5" cy="12" r="1" fill="currentColor"/><circle cx="17" cy="12" r="1" fill="currentColor"/></svg>',
+  arrow: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>',
   check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
   dice: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="9" cy="9" r="1.1" fill="currentColor"/><circle cx="15" cy="15" r="1.1" fill="currentColor"/><circle cx="15" cy="9" r="1.1" fill="currentColor"/><circle cx="9" cy="15" r="1.1" fill="currentColor"/></svg>',
   sun: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg>',
@@ -61,13 +69,13 @@ export function dailyLabel(seed: number): string {
 }
 
 /** Parse what a player types/pastes into the seed field: "48213", "#48213", "gen-7-48213". */
-export function parseSeedInput(text: string): { seed: number; difficulty?: number } | null {
+export function parseSeedInput(text: string): { seed: number; difficulty?: number; gravity?: boolean; hero?: boolean } | null {
   const t = text.trim();
-  const g = /^#?gen-(\d{1,2})-(\d{1,10})$/i.exec(t);
+  const g = /^#?gen-(\d{1,2})(g?)(h?)-(\d{1,10})$/i.exec(t);
   if (g) {
     const d = Number(g[1]);
-    const seed = Number(g[2]);
-    if (d >= 1 && d <= 10 && seed <= 0x7fffffff) return { seed, difficulty: d };
+    const seed = Number(g[4]);
+    if (d >= 1 && d <= 10 && seed <= 0x7fffffff) return { seed, difficulty: d, gravity: g[2] !== '', hero: g[3] !== '' };
     return null;
   }
   const m = /^#?\s*(\d{1,10})$/.exec(t);
@@ -90,10 +98,15 @@ export class Hud {
   private hint: HTMLElement;
   private movesEl: HTMLElement;
   private prevBtn: HTMLButtonElement;
+  private undoBtn!: HTMLButtonElement;
+  /** Touch d-pad (hero levels). */
+  readonly dpad: HTMLElement;
   private nextBtn: HTMLButtonElement;
   private picker: HTMLElement;
   private pickerGrid: HTMLElement;
   private diffSeg: HTMLElement;
+  private modeSeg!: HTMLElement;
+  private heroToggle!: HTMLButtonElement;
   private randomSection!: HTMLElement;
   private diffValue: HTMLElement;
   private diffSolved: HTMLElement;
@@ -113,11 +126,17 @@ export class Hud {
   private winKind: WinKind = 'next';
   /** Difficulty selected in the picker. */
   difficulty: number;
+  /** Random-level gravity mode selected in the picker. */
+  randomMode: RandomMode;
+  /** Random levels in hero (Pusher) mode. */
+  randomHero: boolean;
 
   constructor(root: HTMLElement, private handlers: HudHandlers) {
     this.root = root;
     this.progress = loadProgress();
     this.difficulty = this.progress.difficulty ?? 5;
+    this.randomMode = this.progress.randomMode;
+    this.randomHero = this.progress.randomHero;
     root.innerHTML = '';
     root.classList.add('app');
 
@@ -139,6 +158,7 @@ export class Hud {
     this.canvas = el('canvas', 'board');
     this.canvas.setAttribute('aria-label', 'Game board');
     this.boardWrap.append(this.canvas);
+    // (the d-pad is appended to boardWrap once it exists, below)
     // Board with the hint directly under it, kept together and centred in the free space.
     this.stage = el('div', 'stage');
     this.stage.append(this.boardWrap, this.hint);
@@ -150,7 +170,40 @@ export class Hud {
     const levelsBtn = button('btn-levels', ICONS.grid, 'Levels', () => this.openPicker());
     this.nextBtn = button('btn-next', ICONS.next, 'Next', () => handlers.onNext());
     const newBtn = button('btn-new', ICONS.dice, 'New level', () => handlers.onNewRandom());
-    bottom.append(this.prevBtn, restart, levelsBtn, this.nextBtn, newBtn);
+    this.undoBtn = button('btn-undo', ICONS.undo, 'Undo', () => handlers.onUndo?.());
+    this.undoBtn.disabled = true;
+    bottom.append(this.prevBtn, restart, this.undoBtn, levelsBtn, this.nextBtn, newBtn);
+
+    // D-pad overlay for hero levels on touch screens: tap = one step, hold = repeat.
+    this.dpad = el('div', 'dpad');
+    this.dpad.setAttribute('aria-label', 'Move');
+    for (const d of ['up', 'left', 'right', 'down'] as Dir[]) {
+      const b = el('button', `dpad-btn dpad-${d}`, ICONS.arrow);
+      b.type = 'button';
+      b.setAttribute('aria-label', `Move ${d}`);
+      let t1 = 0;
+      let t2 = 0;
+      const stop = () => {
+        window.clearTimeout(t1);
+        window.clearInterval(t2);
+        b.classList.remove('down');
+      };
+      b.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        stop();
+        b.classList.add('down');
+        try {
+          b.setPointerCapture(e.pointerId);
+        } catch {
+          /* synthetic events */
+        }
+        handlers.onHeroMove?.(d);
+        t1 = window.setTimeout(() => (t2 = window.setInterval(() => handlers.onHeroMove?.(d), 140)), 300);
+      });
+      for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, stop);
+      b.addEventListener('contextmenu', (e) => e.preventDefault());
+      this.dpad.append(b);
+    }
 
     // ----- level picker -----
     this.picker = el('div', 'overlay picker hidden');
@@ -184,6 +237,30 @@ export class Hud {
       b.addEventListener('click', () => this.setDifficulty(d));
       this.diffSeg.append(b);
     }
+    // Floating / Gravity / Mixed.
+    this.modeSeg = el('div', 'mode-seg');
+    this.modeSeg.setAttribute('role', 'radiogroup');
+    this.modeSeg.setAttribute('aria-label', 'Box gravity');
+    for (const [m, label, icon] of [
+      ['floating', 'Floating', ''],
+      ['gravity', 'Gravity', ICONS.down],
+      ['mixed', 'Mixed', ''],
+    ] as [RandomMode, string, string][]) {
+      const b = el('button', 'mode-btn', `${icon}<span>${label}</span>`);
+      b.type = 'button';
+      b.dataset.mode = m;
+      b.setAttribute('role', 'radio');
+      b.title = m === 'mixed' ? 'Gravity on some levels (decided by the seed)' : m === 'gravity' ? 'Boxes fall' : 'Boxes stay where you put them';
+      b.addEventListener('click', () => this.setRandomMode(m));
+      this.modeSeg.append(b);
+    }
+    // Pusher (hero mode) on/off, beside the gravity control.
+    this.heroToggle = el('button', 'hero-toggle', `${ICONS.hero}<span>Pusher</span><i class="switch" aria-hidden="true"></i>`);
+    this.heroToggle.type = 'button';
+    this.heroToggle.title = 'Random levels with a character who pushes the boxes';
+    this.heroToggle.addEventListener('click', () => this.setRandomHero(!this.randomHero));
+    const modeRow = el('div', 'mode-row');
+    modeRow.append(this.modeSeg, this.heroToggle);
     const ractions = el('div', 'random-actions');
     const playRandom = button('btn-primary btn-play-random', ICONS.dice, 'Play random', () => {
       this.closePicker();
@@ -217,9 +294,9 @@ export class Hud {
       if (parsed.difficulty) this.setDifficulty(parsed.difficulty);
       this.seedInput.blur();
       this.closePicker();
-      handlers.onPlaySeed(this.difficulty, parsed.seed);
+      handlers.onPlaySeed(this.difficulty, parsed.seed, parsed.gravity, parsed.hero);
     });
-    rsec.append(rhead, this.diffSeg, ractions, seedForm, this.seedError);
+    rsec.append(rhead, modeRow, this.diffSeg, ractions, seedForm, this.seedError);
     this.randomSection = rsec;
 
     const csec = el('section', 'campaign-section');
@@ -267,6 +344,7 @@ export class Hud {
     bcard.append(this.buildingText);
     this.building.append(bcard);
 
+    this.stage.append(this.dpad); // portrait: under the hint; landscape: moved into the board (placeDpad)
     root.append(top, this.stage, bottom, this.picker, this.win, this.building);
 
     window.addEventListener(
@@ -290,10 +368,23 @@ export class Hud {
     const inner = this.root.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
     const gap = parseFloat(cs.rowGap) || 0;
     let h = inner - this.top.offsetHeight - this.bottom.offsetHeight - gap * 2;
-    if (!this.hint.classList.contains('empty')) {
-      h -= this.hint.offsetHeight + (parseFloat(getComputedStyle(this.stage).rowGap) || 0);
+    const stageGap = parseFloat(getComputedStyle(this.stage).rowGap) || 0;
+    if (!this.hint.classList.contains('empty')) h -= this.hint.offsetHeight + stageGap;
+    // Hero levels on touch screens: the d-pad sits below the board, so the board makes room for it.
+    if (this.dpad.parentElement === this.stage && getComputedStyle(this.dpad).display !== 'none') {
+      h -= this.dpad.offsetHeight + stageGap;
     }
     return Math.max(80, h);
+  }
+
+  /**
+   * Put the d-pad below the board (in the stage, portrait) or, when vertical space is short
+   * (landscape phones), back over the board's corner. Called by the layout pass.
+   */
+  placeDpad(overlay: boolean): void {
+    const parent = overlay ? this.boardWrap : this.stage;
+    if (this.dpad.parentElement !== parent) parent.append(this.dpad);
+    this.dpad.classList.toggle('dpad-overlay', overlay);
   }
 
   get pickerOpen(): boolean {
@@ -321,7 +412,28 @@ export class Hud {
     this.renderDifficulty();
   }
 
+  setRandomHero(on: boolean): void {
+    this.randomHero = on;
+    this.progress.randomHero = on;
+    saveProgress(this.progress);
+    this.renderDifficulty();
+  }
+
+  setRandomMode(m: RandomMode): void {
+    this.randomMode = m;
+    this.progress.randomMode = m;
+    saveProgress(this.progress);
+    this.renderDifficulty();
+  }
+
   private renderDifficulty(): void {
+    this.heroToggle.classList.toggle('on', this.randomHero);
+    this.heroToggle.setAttribute('aria-pressed', String(this.randomHero));
+    for (const b of Array.from(this.modeSeg.children) as HTMLElement[]) {
+      const on = b.dataset.mode === this.randomMode;
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-checked', String(on));
+    }
     this.diffValue.textContent = String(this.difficulty);
     const n = this.progress.randomSolved[String(this.difficulty)] ?? 0;
     this.diffSolved.textContent = ` · ${n} solved`;
@@ -334,16 +446,29 @@ export class Hud {
     }
   }
 
+  /** Debug/preview: show a level's hint, badges and hero controls without touching progress. */
+  showLevelChrome(level: LevelDef): void {
+    this.common(level);
+  }
+
   private common(level: LevelDef): void {
     // Gravity levels: a small badge leads the hint line so the player knows boxes fall here.
     this.hint.textContent = '';
+    if (level.hero) {
+      const pill = el('span', 'gravity-pill hero-pill', `${ICONS.hero}<span>Pusher</span>`);
+      pill.title = 'Walk the character and push the boxes (Z = undo)';
+      this.hint.append(pill);
+    }
     if (level.boxGravity) {
       const pill = el('span', 'gravity-pill', `${ICONS.down}<span>Gravity</span>`);
       pill.title = 'Boxes fall in this level';
       this.hint.append(pill);
     }
     if (level.hint) this.hint.append(document.createTextNode(level.hint));
-    this.hint.classList.toggle('empty', !level.hint && !level.boxGravity);
+    this.hint.classList.toggle('empty', !level.hint && !level.boxGravity && !level.hero);
+    this.root.classList.toggle('hero', !!level.hero);
+    this.root.classList.toggle('gravity', !!level.boxGravity);
+    this.setUndoCount(0);
     this.lastMoves = -1;
     this.setMoves(0);
     this.hideWin();
@@ -363,19 +488,25 @@ export class Hud {
     saveProgress(this.progress);
   }
 
-  /** Show a generated level: "Random 7 · #48213" or "Daily 2026-10-30 · 5". */
+  /** Show a generated level: "Random 7 · #48213", "Random 7g · #48213" (gravity) or "Daily 2026-10-30 · 5". */
   setRandomLevel(level: LevelDef, difficulty: number, seed: number): void {
+    const dl = `${difficulty}${level.boxGravity ? 'g' : ''}${level.hero ? 'h' : ''}`;
     this.index = -1;
     this.root.classList.add('random');
     const daily = seed === this.dailySeed;
     this.levelNum.innerHTML = `<span class="lvl-word">${daily ? 'Daily' : 'Endless'}</span><span class="lvl-short">${daily ? '☀' : '∞'}</span>`;
     this.levelName.textContent = daily
-      ? `Daily ${dailyLabel(seed)} · ${difficulty}`
-      : `Random ${difficulty} · #${seed}`;
+      ? `Daily ${dailyLabel(seed)} · ${dl}`
+      : `Random ${dl} · #${seed}`;
     this.levelName.title = level.id;
     this.levelName.classList.toggle('done', this.progress.randomRecent.includes(level.id));
     this.seedInput.value = String(seed);
     this.common(level);
+  }
+
+  /** Enable the Undo button when there is something to undo. */
+  setUndoCount(n: number): void {
+    this.undoBtn.disabled = n <= 0;
   }
 
   setMoves(n: number): void {

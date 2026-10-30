@@ -15,6 +15,8 @@ export function boxCoversCell(box: Box, bx: number, by: number, gx: number, gy: 
 
 /** Occupancy code for wall cells in `buildOccupancy`. */
 export const OCC_WALL = -1_000_000;
+/** Occupancy code for the hero's cell in `buildOccupancy`. */
+export const OCC_HERO = -2_000_000;
 
 /** Wall tile at grid cell (gx, gy), if any. */
 export function wallAtCell(state: GameState, gx: number, gy: number): Vec | undefined {
@@ -40,7 +42,7 @@ export function boxAtCell(state: GameState, gx: number, gy: number): Box | undef
 
 /**
  * Occupancy grid (row-major, width*height): 0 = empty, -(sandBoxId+1) for sand boxes, OCC_WALL for
- * walls, boxId+1 for active boxes. `excludeBoxId` leaves that box out.
+ * walls, OCC_HERO for the hero, boxId+1 for active boxes. `excludeBoxId` leaves that box out.
  */
 export function buildOccupancy(state: GameState, excludeBoxId = -1): Int32Array {
   const { width, height } = state;
@@ -51,6 +53,8 @@ export function buildOccupancy(state: GameState, excludeBoxId = -1): Int32Array 
         if (x >= 0 && y >= 0 && x < width && y < height) occ[y * width + x] = -(sb.id + 1);
   }
   for (const w of state.walls) if (w.x >= 0 && w.y >= 0 && w.x < width && w.y < height) occ[w.y * width + w.x] = OCC_WALL;
+  const h = state.hero;
+  if (h && h.x >= 0 && h.y >= 0 && h.x < width && h.y < height) occ[h.y * width + h.x] = OCC_HERO;
   for (const b of state.boxes) {
     if (b.state !== 'active' || b.id === excludeBoxId) continue;
     for (const c of b.cells) {
@@ -62,14 +66,15 @@ export function buildOccupancy(state: GameState, excludeBoxId = -1): Int32Array 
   return occ;
 }
 
-/** All cells in bounds, overlapping no sand box, no wall and no other active box (conveyor belts
- *  are walkable, not obstacles). */
+/** All cells in bounds, overlapping no sand box, no wall, not the hero's cell and no other active
+ *  box (conveyor belts are walkable, not obstacles). */
 export function canPlace(state: GameState, box: Box, x: number, y: number): boolean {
   for (const c of box.cells) {
     const gx = x + c.x;
     const gy = y + c.y;
     if (gx < 0 || gy < 0 || gx >= state.width || gy >= state.height) return false;
     if (sandBoxAtCell(state, gx, gy) || wallAtCell(state, gx, gy)) return false;
+    if (state.hero && state.hero.x === gx && state.hero.y === gy) return false;
     for (const o of state.boxes) {
       if (o === box || o.state !== 'active') continue;
       if (boxCoversCell(o, o.x, o.y, gx, gy)) return false;
@@ -109,6 +114,7 @@ export function shakeBox(state: GameState, boxId: number, dx: number, dy: number
 
 /** Move one grid step (dx, dy) if possible. Increments `moves` on success. */
 export function tryMoveBox(state: GameState, boxId: number, dx: number, dy: number): boolean {
+  if (state.hero) return false; // hero levels: boxes are only pushed by the hero
   const box = findBox(state, boxId);
   if (!canMove(box) || (dx === 0 && dy === 0)) return false;
   if (!step(state, box, dx, dy)) return false;
@@ -122,6 +128,7 @@ export function tryMoveBox(state: GameState, boxId: number, dx: number, dy: numb
  * Returns the number of steps taken.
  */
 export function moveBoxToward(state: GameState, boxId: number, tx: number, ty: number): number {
+  if (state.hero) return 0;
   const box = findBox(state, boxId);
   if (!canMove(box)) return 0;
   const budget = Math.abs(tx - box.x) + Math.abs(ty - box.y);

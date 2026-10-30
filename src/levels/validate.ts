@@ -131,6 +131,18 @@ export function validateLevel(level: LevelDef): string[] {
     });
   }
 
+  // Hero (Sokoban mode): starts on a free cell (in bounds, no wall / sand box / box), and with box
+  // gravity it starts resting (floor, wall, sand box or box right below).
+  if (level.hero) {
+    const { x, y } = level.hero;
+    if (!(isInt(x) && isInt(y)) || x < 0 || y < 0 || x >= W || y >= H) p.push(`${tag}: hero start (${x},${y}) out of bounds`);
+    else {
+      const o = owner[y * W + x];
+      if (o) p.push(`${tag}: hero start (${x},${y}) is not a free cell (${o})`);
+      if (level.boxGravity && y + 1 < H && owner[(y + 1) * W + x] === '') p.push(`${tag}: hero start (${x},${y}) does not start resting (box gravity is on)`);
+    }
+  }
+
   // Conveyors: a strip of `length` cells from (x, y) in `dir`. The whole strip must be on the board
   // and must not overlap sand boxes or other conveyors; boxes may start on a belt (belt cells are
   // walkable), and whatever lies beyond the strip end is fine.

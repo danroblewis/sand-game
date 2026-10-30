@@ -265,6 +265,33 @@ Chapter 1 does not). Rules:
 - Validator: for gravity levels, every box must start resting (the cell(s) below each box are the
   floor, a wall, a sand box, or another box) so levels don't start with a cascade.
 
+## Hero mode (Sokoban, per level)
+
+`LevelDef.hero: {x, y}` turns a level into a Sokoban-style level (Chapter 3 "Pusher"). Rules:
+- The hero occupies one cell and is an obstacle for boxes (`canPlace`, falls, belts). Boxes are
+  never dragged in hero levels; keyboard arrows and tap-to-walk move the hero.
+- `moveHero(state, dir)`: if the target cell is free (in bounds, not wall/sand box/box) the hero
+  walks there. If it holds an active, unfrozen box and that box can move one cell in `dir`
+  (`canPlace`, ignoring the hero's own cell), the box is pushed one cell and the hero steps into the
+  vacated cell (emit `heroPushed`). Only one box moves per push (classic Sokoban; multi-cell shapes
+  move as a whole). Frozen boxes, walls, sand boxes, and board edges block. Each successful move
+  emits `heroMoved` and increments `moves`.
+- With `boxGravity`, the hero also falls (one cell per BOX_FALL_INTERVAL steps, `heroLanded`), and
+  can **climb one cell**: moving sideways into an obstacle whose cell above is free, while the cell
+  above the hero is free, steps the hero up onto it (`heroMoved` with `climbed: true`). Up/down
+  inputs do nothing in gravity hero levels (no jumping, no digging). A box pushed off a ledge falls.
+  Boxes never fall into the hero's cell (the hero holds them up, like the held box did).
+- **Undo:** `snapshotState(state)` / `restoreState(state, snap)` in core (deep copies of all regions
+  and box/hero positions, dockings invalidated on restore). The app keeps a stack of snapshots, one
+  per hero move, capped at 200; Z or the Undo button restores the previous one. Undo exists only in
+  hero levels.
+- Solutions for hero levels are strings of `U D L R` (one char per input) in `solution`; the replay
+  settles the sim after each string, so `['RRU', 'LL']` means walk RRU, wait until nothing changes,
+  then LL. Validator: the hero start must be a free cell; in gravity levels it must be resting.
+- Rendering: a small round character with eyes facing `facing`, a bob while walking, a squash on
+  landing; tap-to-walk on touch (BFS through free cells; walking into a box pushes it); a 4-way
+  d-pad overlay on phones; Tab/box selection disabled in hero levels; an Undo button.
+
 ## Non-goals (v1)
 
 No timer, no stars, no monetisation, no accounts, no level editor, no sound (maybe later).

@@ -13,10 +13,22 @@ export interface Progress {
   randomSolved: Record<string, number>;
   /** Recently solved random level ids (so replaying the same seed doesn't count twice). */
   randomRecent: string[];
+  /** Random-level box gravity: always off, always on, or per seed. */
+  randomMode: RandomMode;
+  /** Random levels in hero (Pusher) mode. */
+  randomHero: boolean;
+}
+
+export type RandomMode = 'floating' | 'gravity' | 'mixed';
+export const RANDOM_MODES: readonly RandomMode[] = ['floating', 'gravity', 'mixed'];
+
+/** Whether a random level with this seed uses box gravity under `mode` (Mixed: odd seeds). */
+export function gravityFor(mode: RandomMode, seed: number): boolean {
+  return mode === 'gravity' || (mode === 'mixed' && seed % 2 === 1);
 }
 
 export function loadProgress(): Progress {
-  const p: Progress = { completed: [], last: null, difficulty: null, randomSolved: {}, randomRecent: [] };
+  const p: Progress = { completed: [], last: null, difficulty: null, randomSolved: {}, randomRecent: [], randomMode: 'floating', randomHero: false };
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return p;
@@ -27,6 +39,8 @@ export function loadProgress(): Progress {
     if (o.randomSolved && typeof o.randomSolved === 'object') {
       for (const [k, v] of Object.entries(o.randomSolved)) if (typeof v === 'number' && v > 0) p.randomSolved[k] = v;
     }
+    if (typeof o.randomMode === 'string' && (RANDOM_MODES as readonly string[]).includes(o.randomMode)) p.randomMode = o.randomMode;
+    if (typeof o.randomHero === 'boolean') p.randomHero = o.randomHero;
     if (Array.isArray(o.randomRecent)) p.randomRecent = o.randomRecent.filter((x) => typeof x === 'string').slice(-RECENT_MAX);
   } catch {
     /* storage unavailable or corrupt */

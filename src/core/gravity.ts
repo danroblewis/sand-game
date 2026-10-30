@@ -4,6 +4,7 @@
 import type { Box, GameState } from './types';
 import { BOX_FALL_INTERVAL } from './constants';
 import { canPlace, shakeBox } from './grid';
+import { heroGravity } from './hero';
 
 /** Lowest grid row the box occupies. */
 function bottomRow(b: Box): number {
@@ -77,4 +78,5 @@ export function applyBoxGravity(state: GameState): void {
   for (const b of moved) if (!next.has(b)) land(b);
   // A box that was still falling but is blocked without having moved (support appeared) lands too.
   for (const b of state.boxes) if (b.state === 'active' && !fell.has(b) && b.falling > 0) land(b);
+  heroGravity(state); // after the boxes: the hero holds up boxes resting on it
 }

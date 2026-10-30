@@ -100,6 +100,9 @@ export interface LevelDef {
   /** When true, boxes fall (one cell per BOX_FALL_INTERVAL steps) until they rest on the floor, a
    *  wall, a sand box, or another box. Default false. */
   boxGravity?: boolean;
+  /** Hero (Sokoban) mode: the player is a character starting at this cell who walks and pushes
+   *  boxes. Boxes are never dragged in hero levels. Combine with boxGravity for platform-Sokoban. */
+  hero?: Vec;
   /** Optional one-line hint shown in the HUD. */
   hint?: string;
   /** Optional authored solution as drag steps "box#i -> (x,y)" (i = index into `boxes`). Levels are
@@ -170,10 +173,21 @@ export interface ConveyorState {
   phase: number;
 }
 
+export interface HeroState {
+  x: number;
+  y: number;
+  facing: Dir;
+  /** Cells fallen in the current fall under box gravity (0 when standing). */
+  falling: number;
+}
+
 export type GameEvent =
   | { type: 'boxCompleted'; boxId: number; x: number; y: number; cells: Vec[]; color: ColorId }
   | { type: 'conveyed'; conveyorId: number; boxIds: number[]; dir: Dir }
   | { type: 'boxLanded'; boxId: number; fell: number }
+  | { type: 'heroMoved'; x: number; y: number; dir: Dir; climbed: boolean }
+  | { type: 'heroPushed'; boxId: number; dir: Dir }
+  | { type: 'heroLanded'; fell: number }
   | { type: 'boxUnfrozen'; boxId: number }
   | { type: 'boxMoved'; boxId: number; x: number; y: number }
   | { type: 'transfer'; count: number }
@@ -192,6 +206,8 @@ export interface GameState {
   walls: Vec[];
   /** Box gravity on/off for this level (see LevelDef.boxGravity). */
   boxGravity: boolean;
+  /** The hero in hero mode, else null. */
+  hero: HeroState | null;
   /** Box currently held by the pointer (set by the input layer); conveyors leave it alone. */
   heldBoxId: number | null;
   /** Boxes completed so far (drives frozen counters). */

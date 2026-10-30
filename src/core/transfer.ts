@@ -405,7 +405,9 @@ function pullBox(sp: GameSpace, P: Puller, R: number, credit: number, rng: Rng, 
   const bg = sp.bfsGen;
   // Seeds: opening cells that are empty or hold color c (random start for fairness).
   let qn = 0;
-  const off = nextInt(rng, P.n);
+  // Start offset from the tick (no RNG draw: an idle pull consumes nothing, so a rebuilt space
+  // after restoreState stays in lockstep with the original).
+  const off = (tick * 7919) % P.n;
   for (let t = 0; t < P.n; t++) {
     const p = (off + t) % P.n;
     const s = pairs[4 * p];

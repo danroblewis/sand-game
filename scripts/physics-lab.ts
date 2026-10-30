@@ -246,3 +246,19 @@ runSeeds('T12 tray right of shaft (shaft x=4, tray x=1..3)', glvl(8, 8, [[1, 7, 
 // and a purple 2x1 stacked on the floor hold the catcher in the dock row.
 const plL = () => glvl(7, 8, [[2, 3, 2, 2, [[B, 2], [R, 2]]], [6, 0, 1, 2, [[W, 2]]], [0, 0, 1, 2, [[P, 2]]]], [box('2x1', 0, 7, W), box('2x1', 0, 6, P), box('2x1', 5, 7, R), box('2x1', 5, 6, B)]);
 runSeeds('PL1 pillar then catchers', plL(), ['box#0 -> (2,7)', 'box#1 -> (2,6)', 'box#3 -> (2,5)', 'box#2 -> (2,5)'], true);
+
+// ---- hero (Sokoban) mode, chapter 3 "Pusher" (2026-10-30) ----
+// Hero plans are U/D/L/R strings; the replay waits 6 steps per input and settles after each entry.
+const hlvl = (l: LevelDef, hero: [number, number]): LevelDef => ({ ...l, hero: { x: hero[0], y: hero[1] } });
+// HA. Pushing a box up under a floating sand box one cell at a time: it only catches once it is
+// right under it (no leak in transit). And a box pushed past the side of a sand box docks on the
+// way for the 6 steps between inputs (join-and-split had to start its bar away from the side).
+runSeeds('HA1 push up under (catch)', hlvl(lvl(6, 8, [[2, 0, 2, 2, [[B, 2]]]], [box('2x1', 2, 5, B)]), [2, 6]), ['UUU'], true);
+runSeeds('HA2 push up past a sand box side (leak)', hlvl(lvl(6, 8, [[3, 0, 2, 3, [[G, 4]]]], [box('2x1', 1, 4, G)]), [1, 5]), ['UUUU'], true);
+// Results: HA1 catches only at the end (3 inputs, ~0.6 s to fill). HA2: the bar picks up green
+// on every cell it spends beside the side on the way (6 steps per input), so start boxes away from
+// sand-box sides they will slide past (join-and-split: 0.23 leaked before the fix).
+// Riding a draining box down when it pops and climbing are proven by the levels themselves
+// (push-the-pin, pusher, step-up, wrong-side).
+// Wrong Side: from the yellow landing to the white step's pop is ~5-6 s (yellow 1x1 side drain
+// ~2.5 s, then the thawed 1x2 drains two cells): the hero needs 4 inputs to get back down.
