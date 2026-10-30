@@ -1,0 +1,15 @@
+{
+  "name": "Sand Boxes",
+  "short_name": "Sand Boxes",
+  "description": "A relaxing sand-sorting puzzle.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#1b1f2a",
+  "theme_color": "#1b1f2a",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "apple-touch-icon.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}

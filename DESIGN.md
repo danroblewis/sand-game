@@ -1,0 +1,218 @@
+# Sand Boxes — design & module contract
+
+A relaxing web puzzle game. No ads, **no timer**, no scoring pressure. Finishing the puzzle is the reward.
+
+## The game
+
+- The board is a grid of cells (typically 6–8 wide, 8–11 tall).
+- **Sand boxes** are fixed containers on the grid, filled with horizontal **layers** of colored sand
+  (bottom layer first). Sand inside them obeys falling-sand cellular-automaton rules.
+- **Boxes** are player-movable, colored containers with tetris-like shapes (1x1, 2x1, 1x2, 2x2,
+  3x1, 1x3, L/J tetrominoes in 4 rotations, 3-cell small L in 4 rotations). They slide on the grid
+  and collide with each other, with sand boxes, and with the board edges (Rush Hour / traffic-jam
+  feel: you must shuffle boxes to reach a sand box).
+- When a box of color C shares an edge with a sand box, sand of color C flows out of the sand box
+  through the shared edge into the box, grain by grain, appearing at the mirrored position on the
+  box side and then falling inside the box. Other colors stay put.
+- **Same-color boxes also exchange sand** across a shared edge (so a box can act as a conduit).
+- A box that is **full** is complete: it pops and is removed from the board, freeing space.
+- Some boxes start **frozen** with a number on them. Each completed box decrements every frozen
+  counter. At 0 the box thaws, reveals its color, and becomes movable.
+- **Conservation:** for each color, total sand in all sand boxes == total capacity of all boxes of
+  that color (including frozen). A box pops when it is within a tenth of a cell of full, so a few
+  stranded grains never block a level; the level is won when every box has been removed.
+- Controls: drag with pointer (snaps to grid, slides around obstacles). Keyboard: Tab / Shift+Tab
+  cycles selection through movable boxes, arrow keys move one cell, Esc deselects, R restarts,
+  N next level (after win), [ and ] previous/next level.
+
+## Sand mechanics (the part that must be exactly right)
+
+Philosophy: **the falling-sand simulation is the ground truth.** Gravity always applies to every
+grain. There is no long-range magnetism, no tunnelling through other colors, no engineered layer
+collapse, and grains are never teleported to "the lowest empty cell". What the player sees is the
+simulation figuring it out. The only non-gravity force is a **short-reach pull** that colored boxes
+exert on matching sand right next to their opening.
+
+Fine grid: `GRAINS_PER_CELL = 24` grains per grid-cell edge, so a 1x1 box holds 576 grains.
+Every sand box and every box has a `SandRegion` (see `src/core/types.ts`). Box regions are the
+bounding box of the shape with a `mask` marking in-shape fine cells. y grows DOWN in all grids.
+
+Sim runs at a fixed 60 steps/second (the renderer may call `stepGame` multiple times per frame to
+catch up; cap at ~4 steps per frame). Everything uses the deterministic RNG in `state.rng`.
+
+### One shared simulation
+
+All regions are simulated as one space. Where a region's grid cell shares an edge with a docked
+region's grid cell, the fine cells across that edge are neighbours of each other (mirrored
+positions, like the current docking pairs). A move across an edge is allowed only if the
+destination region **accepts** that grain:
+- a **box** accepts grains of its own color while `count < capacity` (and it is active and unfrozen);
+- a **sand box** never accepts grains (sand never flows back into a sand box);
+- grains never leave a box except into another box of the same color.
+Boxes never dock to frozen boxes. Nothing else is special about edges: a grain falling off the
+bottom row of a sand box into a box below is just gravity; a grain sliding diagonally across a side
+edge is just the slide rule; two same-color boxes side by side level out by slumping; a same-color
+box above another drains into it by gravity.
+
+### Per-step rules, bottom-up sweep, alternating scan direction each step
+
+1. **Gravity:** a grain falls 1 cell if the cell below (possibly across an edge) is in-mask and
+   empty and accepts it.
+2. **Slide:** else if down-left or down-right is in-mask, empty and accepting, move there (random
+   pick when both are free).
+3. **Slump:** else with probability `P_SLUMP`, if a sideways neighbour is in-mask, empty and
+   accepting, AND there is a drop (an empty in-mask cell below) within `SLUMP_REACH` cells along
+   that free run, move sideways. Piles relax to a shallow slope; sand on a flat surface stays still.
+4. **Pull:** each active unfrozen box with free capacity pulls matching grains that are within
+   `PULL_REACH = 3` fine cells (grains; settable 1–6) of its opening cells, measured by a BFS from
+   the opening cells that expands only through cells that are empty or hold the box's color (8-connected, but never squeezing
+   diagonally between two blocking grains). Grains the BFS reaches move one cell per step toward the
+   opening (nearest first, with probability `P_PULL`), into an empty cell (any direction, including
+   upward — this is the one place gravity is overridden, and only within that tiny reach) or by **swapping with
+   a same-color grain** (so a connected body of matching sand gets pumped toward the opening; the
+   hole appears where the pulled grain was and the sand above it falls normally next step). Pulled
+   grains never displace grains of another color. Grains under pull skip gravity that step; grains
+   outside reach are ordinary sand.
+   At the opening a grain crosses to the mirrored inlet cell if it is empty. If the inlet cell holds
+   a same-color grain, the box **pushes a chain**: find the nearest empty in-mask cell of the box
+   reachable from the inlet through same-color grains (BFS inside the box, any direction) and shift
+   the grains along that path by one, so the incoming grain enters at the inlet and the pile
+   bulges there (then gravity/slump spread it). This is how a box fills completely when docked on a
+   side even after the pile reaches the inlet row, and how a box on top keeps taking sand through
+   its full bottom row. Cap the pull to `PULL_RATE_BASE + PULL_RATE_PER_CELL * cells` grains per box
+   per step so a 1x1 box fills in roughly 2 s when the sand is in reach, bigger shapes proportionally.
+5. **Shake on move:** when a box moves by (dx, dy) in grid cells, its sand gets a small impulse
+   opposite to the motion: with probability `P_SHAKE` each grain that has an empty in-mask cell in
+   direction (−sign(dx), −sign(dy)) hops into it (for a downward move the surface grains hop UP one
+   or two cells and then fall back; for a sideways move the surface tumbles the other way). Grain
+   count is preserved exactly. Purely cosmetic, cheap, and skipped for boxes with no sand.
+6. **Completion (with slack):** a box is complete when `region.count >= region.capacity - COMPLETION_SLACK`,
+   where `COMPLETION_SLACK = round(0.1 * GRAINS_PER_UNIT)` (a tenth of a grid cell, 58 grains, the
+   same absolute amount for every box). Real sand leaves films and trapped grains behind, and the
+   user chose this tolerance over a sand surplus. On completion: set `state = 'removed'`, increment
+   `completedCount`, emit `boxCompleted`, decrement every frozen box's counter (emit `boxUnfrozen`
+   when one hits 0). Leftover grains of that color stay in the sand boxes as debris and no longer
+   matter. When all boxes are removed emit `won` and set `state.won = true` regardless of debris.
+7. **Debris dissolves:** after any completion, a color with grains still in sand boxes but no box
+   of that color left on the board (frozen boxes count as remaining capacity) is finished: over
+   `DISSOLVE_STEPS` (45) its remaining grains are removed at random, evenly, then one
+   `debrisDissolved` event fires. Without this, leftover debris seals the next layer from the side
+   or blocks the next catch from below, limiting a sand box to two colors.
+
+Implementation notes (as built, 2026-10-30): the pull is a 3-grain nudge at the opening, nothing
+moves sand upward over distance. Only grains actually stepping into an empty cell nearer the opening
+skip gravity that step; a grain whose own fall/slide already heads for the opening is left to the
+CA; same-color swaps are cosmetic and hold nothing. **Edge flow** (part of slump, sand boxes only):
+a surface grain whose free run along its row ends at a docked opening of its color, passes over
+one below (empty or occupied: an occupied inlet is fed by the chain push, e.g. into the foot of an
+L/J/S under its overhang), or reaches a column of such an opening, keeps flowing toward it at any
+distance, `EDGE_FLOW_SPEED = 12` cells per step and
+without the `P_SLUMP` roll, so a layer beside (or above) a box drains completely as a landslide
+toward the opening instead of resting as a wedge on the far side (box-to-box flow keeps ordinary
+slump); ordinary slumps toward an opening of the grain's color skip the `P_SLUMP` roll. The chain
+push waits until the inlet grain has settled; the rate cap limits only pull
+crossings (gravity/slide/slump cross edges freely, so a box below a sand box fills by gravity in
+~0.4 s). The pull draws only from sand boxes. Quiet regions sleep until a neighbour changes.
+
+Consequences for level design (the puzzle is now the physics):
+- a box on top of a sand box only gets what is within reach of its bottom edge: the top of the
+  pile, if the sand box is full enough. As the pile drops out of reach the flow stops;
+- a box on the side gets the layer at its height, which drains as a wedge/slope while the layers
+  above cave in; what is above it ends up on the floor and may bury the rest;
+- a box below a sand box (if the layout allows) catches its color by gravity as it reaches the floor;
+- grains of a color can get buried under others; they come back into reach only when the layers
+  above are taken. Levels must be verified by replaying through the real simulation (see
+  `scripts/replay.ts`); the abstract solver is a heuristic for finding candidate plans only.
+
+Grain values pack color + a random shade (`packGrain`) so sand has a speckled look; shade travels
+with the grain.
+
+## Movement rules
+
+- A box occupies `box.cells` offset by `(box.x, box.y)`. `canPlace(state, box, x, y)` is true when
+  all cells are in bounds and overlap no sand box and no other active box.
+- `tryMoveBox(state, id, dx, dy)` moves one grid step if `canPlace`; increments `moves`, emits
+  `boxMoved`, returns boolean. Frozen or removed boxes never move.
+- `moveBoxToward(state, id, tx, ty)` slides toward a target grid position one step at a time
+  (up to `|dx|+|dy|` steps), trying the axis with the larger remaining distance first, then the
+  other; stops when neither axis can make progress. Used for drag. Each successful step is a move.
+  (Counting: a drag counts as 1 move total even if it slid several cells — `moveBoxToward` returns
+  the number of steps; the input layer increments `moves` once per drag that moved. So
+  `moveBoxToward` must NOT itself increment `moves`; `tryMoveBox` does.)
+
+## Module ownership & API
+
+```
+src/core/types.ts      (DONE) shared types + grain packing helpers
+src/core/shapes.ts     (DONE) SHAPES, shapeBounds, shapeCellCount
+src/core/rng.ts        core: mulberry32-style `nextFloat(rng)`, `nextInt(rng, n)`
+src/core/sand.ts       core: createRegion(w,h,mask?), stepRegion(region, rng, step), fillLayers(region, layers),
+                             regionIsFull(region), nearestEmpty(region, x, y)
+src/core/grid.ts       core: canPlace, tryMoveBox, moveBoxToward, movableBoxes(state) (tab order: y then x),
+                             boxAtCell(state, gx, gy), occupancy helpers
+src/core/transfer.ts   core: gameSpace/invalidateSpace (shared world map), applyPull, chainPush, shakeBox
+src/core/game.ts       core: createGame(level, seed?), stepGame(state), checkCompletions(state)
+src/core/index.ts      core: re-export the public API above
+src/levels/validate.ts levels: validateLevel(level): string[] (empty = ok)
+src/levels/index.ts    levels: LEVELS: LevelDef[] in play order, each with an authored `solution`
+src/levels/solver.ts   levels: heuristic plan finder (NOT a proof); physics replay is the proof
+src/levels/generate.ts levels: generateLevel(seed, difficulty) with physics-verified acceptance
+src/render/*           render: canvas renderer reading GameState; effects for pop/thaw
+src/input/*            input: pointer drag + keyboard → core move functions; selection state
+src/ui/*               ui: HUD (level name, hint, moves, restart, prev/next, level picker), progress in localStorage
+src/main.ts            app: wires everything, fixed-step loop
+index.html, src/style.css
+tests/*.test.ts        vitest
+```
+
+Public core API (exact names; renderer/input/levels depend on these):
+
+```ts
+createGame(level: LevelDef, seed?: number): GameState
+stepGame(state: GameState): void             // one 60Hz step: sand, transfers, magnetism, completions
+canPlace(state: GameState, box: Box, x: number, y: number): boolean
+tryMoveBox(state: GameState, boxId: number, dx: number, dy: number): boolean
+moveBoxToward(state: GameState, boxId: number, tx: number, ty: number): number // steps taken
+movableBoxes(state: GameState): Box[]         // active && frozen===0, sorted by y then x
+boxAtCell(state: GameState, gx: number, gy: number): Box | undefined // active boxes only
+validateLevel(level: LevelDef): string[]      // from src/levels/validate.ts
+```
+
+Colors: `ColorId` 1..12 map to a palette in `src/render/colors.ts` (render owns it):
+1 red, 2 orange, 3 yellow, 4 green, 5 teal, 6 blue, 7 indigo, 8 purple, 9 pink, 10 brown,
+11 white/sand, 12 black/charcoal. Levels should use at most ~6 colors each.
+
+## Visual direction
+
+Dark slate background, soft grid. Sand boxes look like glass containers with a thin light frame;
+sand is drawn as crisp pixels (offscreen canvas per region at 1px per grain, drawn scaled with
+`imageSmoothingEnabled = false`). Boxes: rounded shape outline in their color, translucent tinted
+fill, sand inside. Frozen boxes: pale icy fill, frosted texture, big centered number. Selected box:
+glowing outline. Dragged box lerps to its grid position quickly (~80 ms) so motion feels smooth.
+Completion: quick scale-up + fade pop (~250 ms) with a few sand sparks. Thaw: brief flash.
+Responsive: the board scales to fit the viewport (both portrait phone and desktop), pointer events
+work for touch and mouse.
+
+## Springs
+
+A **spring** is a fixed one-cell tile (`LevelDef.springs`, `SpringDef {x, y, dir}`) that pushes
+the contiguous stack of boxes in front of it. Rules:
+- The **stack** is found by pushing: start with every active box occupying the cell in front of the
+  spring; if moving the set one cell in `dir` would overlap another active unfrozen box, that box
+  joins the set; repeat. If any cell the set would move into is out of bounds, a sand box, a spring,
+  or a frozen box, the stack is **blocked** (spring `loaded = true`), else the whole set moves one
+  cell in `dir` (emit `springPushed`, no `moves` increment, `shakeBox` each pushed box).
+- Pushes happen inside `stepGame`, at most one cell every `SPRING_INTERVAL` (4) steps per spring,
+  so a stack visibly launches rather than teleports.
+- While a box is in a spring's stack its `pushDir` is set; `tryMoveBox`/`moveBoxToward` refuse to
+  move it against that direction (sideways and along the push are fine). Boxes can be dragged into
+  or out of a lane; the spring reacts next step.
+- Springs are obstacles for `canPlace` like sand boxes. Validator: in bounds, no overlap with sand
+  boxes, boxes, or other springs; the cell in front must be inside the board.
+- Design purpose: a column of boxes between a spring and a sand box drains the sand box in a fixed
+  sequence; when the front box pops the next is pushed into contact. The player chooses what goes
+  into the lane and in which order.
+
+## Non-goals (v1)
+
+No timer, no stars, no monetisation, no accounts, no level editor, no sound (maybe later).
