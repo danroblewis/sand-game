@@ -1,5 +1,5 @@
 // Canvas renderer. Reads GameState; never mutates it.
-import type { Box, ColorId, Dir, GameEvent, GameState, SandRegion, ShapeName, SpringState, Vec } from '../core/types';
+import type { Box, ColorId, Dir, GameEvent, GameState, SandRegion, ShapeName, ConveyorState, Vec } from '../core/types';
 import { SHADE_COUNT } from '../core/types';
 import { SHAPES } from '../core/shapes';
 import { regionVersion } from '../core/sand';
@@ -42,8 +42,6 @@ export type Effect =
       sparks: Spark[];
     }
   | { kind: 'thaw'; t0: number; dur: number; boxId: number }
-  /** Coil snap when a spring pushes its stack. */
-  | { kind: 'spring'; t0: number; dur: number; springId: number }
   /** Sparkle over a sand box whose leftover grains of `color` just dissolved. */
   | { kind: 'debris'; t0: number; dur: number; color: ColorId; x: number; y: number; w: number; h: number; sparks: Spark[] };
 
@@ -61,16 +59,20 @@ export function createView(): View {
 const POP_MS = 250;
 const SPARK_MS = 650;
 const THAW_MS = 450;
-const SPRING_SNAP_MS = 150;
 const DEBRIS_MS = 650;
-/** Box position lerp time constant while being launched by a spring. */
+/** Box position lerp time constant while a conveyor carries the box. */
 const PUSH_LERP_TAU = 0.12;
 /** A color counts as "present" in a region if seen within this window (debris sparkle placement). */
 const DEBRIS_SEEN_MS = 2500;
 
 const DIR_VEC: Record<Dir, [number, number]> = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
-/** Rotation that maps the local "up" axis onto `dir`. */
-const DIR_ANGLE: Record<Dir, number> = { up: 0, right: Math.PI / 2, down: Math.PI, left: -Math.PI / 2 };
+/** Rotation that maps the local +x axis onto `dir`. */
+const DIR_ANGLE: Record<Dir, number> = { right: 0, down: Math.PI / 2, left: Math.PI, up: -Math.PI / 2 };
+/** Belt chevron crawl speed (cells per second) and spacing (cells). */
+const BELT_SPEED = 1;
+const BELT_SPACING = 0.5;
+/** A belt looks "busy" for this long after it moved a box. */
+const BELT_ACTIVE_MS = 300;
 
 /** Build an effect for a game event (or null if the event has no visual). */
 export function effectForEvent(ev: GameEvent, now: number): Effect | null {
@@ -217,7 +219,7 @@ function roundRectPath(x: number, y: number, w: number, h: number, r: number): P
 interface RenderPos {
   rx: number;
   ry: number;
-  /** Lerp time constant in seconds (longer while a spring launches the box). */
+  /** Lerp time constant in seconds (longer while a conveyor carries the box). */
   tau: number;
 }
 
@@ -240,6 +242,8 @@ export class Renderer {
   private lastTime = 0;
   private frost: CanvasPattern | null = null;
   private lastState: GameState | null = null;
+  /** Last time each conveyor moved a box (performance.now ms). */
+  private beltActiveAt = new Map<number, number>();
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -348,6 +352,7 @@ export class Renderer {
     if (state !== this.lastState) {
       this.lastState = state;
       this.positions.clear();
+      this.beltActiveAt.clear();
     }
     const dt = this.lastTime ? Math.min(0.1, (now - this.lastTime) / 1000) : 0;
     this.lastTime = now;
@@ -359,7 +364,7 @@ export class Renderer {
 
     this.drawBoard();
     for (const sb of state.sandBoxes) this.drawSandBox(sb.x, sb.y, sb.w, sb.h, sb.region);
-    for (const sp of state.springs ?? []) this.drawSpring(sp, view, now);
+    for (const cv of state.conveyors ?? []) this.drawConveyor(cv, now);
 
     // Update animated positions.
     for (const b of state.boxes) {
@@ -368,8 +373,8 @@ export class Renderer {
         p = { rx: b.x, ry: b.y, tau: LERP_TAU };
         this.positions.set(b.id, p);
       } else {
-        // A box the player grabs follows the finger quickly again.
-        if (b.id === view.dragBoxId) p.tau = LERP_TAU;
+        // A box the player holds follows the finger quickly.
+        if (b.id === view.dragBoxId || b.id === state.heldBoxId) p.tau = LERP_TAU;
         const k = dt > 0 ? 1 - Math.exp(-dt / p.tau) : 1;
         p.rx += (b.x - p.rx) * k;
         p.ry += (b.y - p.ry) * k;
@@ -395,16 +400,18 @@ export class Renderer {
   }
 
   /**
-   * Effects for a game event. Handles the events that need board knowledge (springs, debris) and
-   * delegates the rest to `effectForEvent`. Also retimes position lerps for spring launches.
+   * Effects for a game event. Handles the events that need board knowledge (conveyors, debris) and
+   * delegates the rest to `effectForEvent`. Also slows position lerps for boxes a belt carries.
    */
   effectsForEvent(ev: GameEvent, state: GameState, now: number): Effect[] {
-    if (ev.type === 'springPushed') {
+    if (ev.type === 'conveyed') {
+      this.beltActiveAt.set(ev.conveyorId, now);
       for (const id of ev.boxIds) {
+        if (id === state.heldBoxId) continue;
         const p = this.positions.get(id);
         if (p) p.tau = PUSH_LERP_TAU;
       }
-      return [{ kind: 'spring', t0: now, dur: SPRING_SNAP_MS, springId: ev.springId }];
+      return [];
     }
     if (ev.type === 'debrisDissolved') {
       const out: Effect[] = [];
@@ -432,103 +439,77 @@ export class Renderer {
     return fx ? [fx] : [];
   }
 
-  /** Spring tile: back plate, zigzag coil pointing in `dir`, cap and a faint chevron. */
-  private drawSpring(sp: SpringState, view: View, now: number): void {
+  /**
+   * Conveyor: a dark recessed lane over its cells, a roller at each end, and chevrons crawling in
+   * `dir` (brighter for a moment after the belt moved a box).
+   */
+  private drawConveyor(cv: ConveyorState, now: number): void {
+    const cells = cv.cells && cv.cells.length ? cv.cells : [{ x: cv.x, y: cv.y }];
+    const len = cells.length;
     const ctx = this.ctx;
     const cs = this.cellSize;
-    const cx = this.originX + (sp.x + 0.5) * cs;
-    const cy = this.originY + (sp.y + 0.5) * cs;
-    let pulse = 0;
-    for (const e of view.effects) {
-      if (e.kind !== 'spring' || e.springId !== sp.id) continue;
-      const t = (now - e.t0) / e.dur;
-      if (t >= 0 && t <= 1) pulse = Math.max(pulse, Math.sin(Math.PI * t));
-    }
+    const [dx, dy] = DIR_VEC[cv.dir];
+    const start = cells[0];
+    // Local frame: origin at the back edge of the start cell (centre line), +u along dir.
+    const ox = this.originX + (start.x + 0.5 - dx * 0.5) * cs;
+    const oy = this.originY + (start.y + 0.5 - dy * 0.5) * cs;
+    const L = len * cs;
+    const half = cs * 0.36; // lane half-width
+    const inset = cs * 0.07;
 
-    // Fixed tile base.
-    const inset = cs * 0.06;
-    const tile = roundRectPath(cx - cs / 2 + inset, cy - cs / 2 + inset, cs - inset * 2, cs - inset * 2, cs * 0.14);
-    ctx.fillStyle = 'rgba(255,255,255,0.035)';
-    ctx.fill(tile);
-    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
-    ctx.lineWidth = Math.max(1, cs * 0.025);
-    ctx.stroke(tile);
+    const since = now - (this.beltActiveAt.get(cv.id) ?? -1e9);
+    const active = since < BELT_ACTIVE_MS ? 1 - since / BELT_ACTIVE_MS : 0;
 
     ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate(DIR_ANGLE[sp.dir]);
-    const s = 1 + 0.12 * pulse;
-    ctx.scale(s, s);
-    // Local frame: push direction is -y ("up"); the plate sits at +y.
-    const loaded = sp.loaded;
-    const metal = loaded ? '#e6ebf4' : '#aab3c4';
+    ctx.translate(ox, oy);
+    ctx.rotate(DIR_ANGLE[cv.dir]);
 
-    // Back plate with an engraved chevron pointing in the push direction.
-    const plateY = cs * 0.25;
-    const plateH = cs * 0.15;
-    const g = ctx.createLinearGradient(0, plateY, 0, plateY + plateH);
-    g.addColorStop(0, '#a3abbd');
-    g.addColorStop(1, '#5d6476');
-    ctx.fillStyle = g;
-    ctx.fill(roundRectPath(-cs * 0.36, plateY, cs * 0.72, plateH, cs * 0.04));
+    // Recessed lane.
+    const lane = roundRectPath(inset, -half, L - inset * 2, half * 2, cs * 0.1);
+    ctx.fillStyle = 'rgba(8,10,16,0.55)';
+    ctx.fill(lane);
+    ctx.save();
+    ctx.clip(lane);
+    const sh = ctx.createLinearGradient(0, -half, 0, half);
+    sh.addColorStop(0, 'rgba(0,0,0,0.45)');
+    sh.addColorStop(0.25, 'rgba(0,0,0,0)');
+    sh.addColorStop(0.8, 'rgba(255,255,255,0)');
+    sh.addColorStop(1, 'rgba(255,255,255,0.05)');
+    ctx.fillStyle = sh;
+    ctx.fillRect(0, -half, L, half * 2);
+
+    // Crawling chevrons (time based, ~1 cell/s).
+    const spacing = BELT_SPACING * cs;
+    const phase = (((now / 1000) * BELT_SPEED * cs) % spacing + spacing) % spacing;
+    const cw = cs * 0.13; // chevron depth along u
+    const chH = half * 0.62;
     ctx.beginPath();
-    ctx.moveTo(-cs * 0.07, plateY + plateH * 0.72);
-    ctx.lineTo(0, plateY + plateH * 0.28);
-    ctx.lineTo(cs * 0.07, plateY + plateH * 0.72);
-    ctx.strokeStyle = loaded ? '#7a5a10' : '#3c4252';
-    ctx.lineWidth = Math.max(1.2, cs * 0.03);
+    for (let u = -spacing + phase; u < L + spacing; u += spacing) {
+      ctx.moveTo(u - cw, -chH);
+      ctx.lineTo(u, 0);
+      ctx.lineTo(u - cw, chH);
+    }
+    ctx.strokeStyle = `rgba(200,212,235,${0.16 + 0.24 * active})`;
+    ctx.lineWidth = Math.max(1.5, cs * 0.05);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.stroke();
-
-    // Coil: relaxed reaches near the far edge, loaded is compressed toward the plate.
-    const endY = loaded ? -cs * 0.04 : -cs * 0.34;
-    const coils = loaded ? 4 : 5;
-    const amp = cs * 0.2;
-    ctx.beginPath();
-    ctx.moveTo(0, plateY);
-    for (let i = 1; i < coils * 2; i++) {
-      const y = plateY + ((endY - plateY) * i) / (coils * 2);
-      ctx.lineTo(i % 2 ? -amp : amp, y);
-    }
-    ctx.lineTo(0, endY);
-    if (loaded) {
-      ctx.shadowColor = 'rgba(245,200,76,0.45)';
-      ctx.shadowBlur = cs * 0.1;
-    }
-    ctx.strokeStyle = metal;
-    ctx.lineWidth = Math.max(1.5, cs * (loaded ? 0.035 : 0.045));
-    ctx.stroke();
-    ctx.shadowBlur = 0;
-
-    // Push cap.
-    ctx.fillStyle = metal;
-    ctx.fill(roundRectPath(-cs * 0.27, endY - cs * 0.07, cs * 0.54, cs * 0.08, cs * 0.03));
     ctx.restore();
-  }
 
-  /** Faint chevron at the leading edge of a box that a spring is pushing. */
-  private drawPushIndicator(b: Box, px: number, py: number): void {
-    const dir = b.pushDir;
-    if (!dir) return;
-    const [dx, dy] = DIR_VEC[dir];
-    // Leading cell: furthest along the push direction (ties: the first one).
-    let lead = b.cells[0];
-    for (const c of b.cells) if (c.x * dx + c.y * dy > lead.x * dx + lead.y * dy) lead = c;
-    const cs = this.cellSize;
-    const ctx = this.ctx;
-    ctx.save();
-    ctx.translate(px + (lead.x + 0.5 + dx * 0.3) * cs, py + (lead.y + 0.5 + dy * 0.3) * cs);
-    ctx.rotate(DIR_ANGLE[dir]);
-    ctx.beginPath();
-    ctx.moveTo(-cs * 0.1, cs * 0.04);
-    ctx.lineTo(0, -cs * 0.06);
-    ctx.lineTo(cs * 0.1, cs * 0.04);
-    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-    ctx.lineWidth = Math.max(1.5, cs * 0.04);
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.stroke();
+    ctx.strokeStyle = `rgba(255,255,255,${0.08 + 0.1 * active})`;
+    ctx.lineWidth = Math.max(1, cs * 0.02);
+    ctx.stroke(lane);
+
+    // Rollers at both ends: small cylinders across the lane.
+    const rw = cs * 0.13;
+    for (const u of [inset + rw * 0.15, L - inset - rw * 1.15]) {
+      const g = ctx.createLinearGradient(u, 0, u + rw, 0);
+      g.addColorStop(0, '#4a5163');
+      g.addColorStop(0.45, '#b4bccc');
+      g.addColorStop(1, '#4a5163');
+      ctx.fillStyle = g;
+      ctx.fill(roundRectPath(u, -half - cs * 0.03, rw, half * 2 + cs * 0.06, rw * 0.45));
+    }
     ctx.restore();
   }
 
@@ -774,8 +755,6 @@ export class Renderer {
         }
       }
     }
-
-    if (b.pushDir && b.frozen === 0) this.drawPushIndicator(b, px, py);
 
     // Thaw flash.
     for (const e of view.effects) {

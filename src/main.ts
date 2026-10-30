@@ -253,6 +253,17 @@ document.addEventListener(
   { passive: false },
 );
 
+/** A held box that popped or froze is no longer held (the pointer may not have moved since). */
+function releaseGoneHeldBox(): void {
+  const id = state.heldBoxId;
+  if (id === null || id === undefined) return;
+  const b = state.boxes.find((x) => x.id === id);
+  if (!b || b.state !== 'active' || b.frozen > 0) {
+    state.heldBoxId = null;
+    if (view.dragBoxId === id) view.dragBoxId = null;
+  }
+}
+
 let accumulator = 0;
 let lastTime = performance.now();
 
@@ -269,6 +280,7 @@ function frame(now: number): void {
     }
     if (steps === MAX_STEPS_PER_FRAME && accumulator > STEP_MS) accumulator = 0; // drop backlog
     drainEvents(now);
+    releaseGoneHeldBox();
     fixSelection(state, view);
     renderer.render(state, view, now);
     hud.setMoves(state.moves);

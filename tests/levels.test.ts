@@ -168,28 +168,30 @@ describe('validateLevel', () => {
     expect(validateLevel(ok)).toEqual([]);
   });
 
-  it('accepts a spring and rejects bad springs', () => {
+  it('accepts conveyors and rejects bad ones', () => {
     const ok = base();
-    ok.springs = [{ x: 0, y: 0, dir: 'right' }];
+    // a belt under a box (boxes may start on belts) running up to the sand box face
+    ok.conveyors = [{ x: 0, y: 6, dir: 'up', length: 3 }];
     expect(validateLevel(ok)).toEqual([]);
-    const cases: [LevelDef['springs'], RegExp][] = [
-      [[{ x: 6, y: 0, dir: 'left' }], /out of bounds/],
-      [[{ x: 2, y: 1, dir: 'up' }], /overlaps sandBox/],
-      [[{ x: 0, y: 6, dir: 'up' }], /overlaps box/],
-      [[{ x: 0, y: 0, dir: 'up' }], /faces the board edge/],
-      [[{ x: 2, y: 0, dir: 'down' }], /faces a sand box/],
-      [[{ x: 0, y: 0, dir: 'right' }, { x: 0, y: 0, dir: 'down' }], /spring#1.*overlaps spring#0/],
-      [[{ x: 0, y: 0, dir: 'sideways' as never }], /unknown direction/],
+    const cases: [LevelDef['conveyors'], RegExp][] = [
+      [[{ x: 0, y: 1, dir: 'up', length: 3 }], /out of bounds/],
+      [[{ x: 6, y: 0, dir: 'left', length: 1 }], /out of bounds/],
+      [[{ x: 0, y: 1, dir: 'right', length: 3 }], /overlaps sandBox/],
+      [[{ x: 0, y: 0, dir: 'right', length: 0 }], /length/],
+      [[{ x: 0, y: 0, dir: 'sideways' as never, length: 1 }], /unknown direction/],
+      [
+        [
+          { x: 0, y: 4, dir: 'right', length: 3 },
+          { x: 1, y: 5, dir: 'up', length: 2 },
+        ],
+        /conveyor#1.*overlaps conveyor#0/,
+      ],
     ];
-    for (const [springs, re] of cases) {
+    for (const [conveyors, re] of cases) {
       const l = base();
-      l.springs = springs;
+      l.conveyors = conveyors;
       expect(validateLevel(l).join('\n')).toMatch(re);
     }
-    // a spring may not sit on a box
-    const l = base();
-    l.springs = [{ x: 3, y: 6, dir: 'up' }];
-    expect(validateLevel(l).join('\n')).toMatch(/spring#0.*overlaps box#1/);
   });
 
   it('rejects duplicate level ids', () => {

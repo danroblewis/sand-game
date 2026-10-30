@@ -66,5 +66,5 @@ export const COMPLETION_SLACK = Math.round(0.1 * GRAINS_PER_UNIT);
  *  grains in the sand boxes crumble away over this many steps (~0.75 s). */
 export const DISSOLVE_STEPS = 45;
 
-/** A spring pushes its stack at most one cell every this many steps. */
-export const SPRING_INTERVAL = 4;
+/** Conveyors move the boxes riding them one cell every this many steps. */
+export const CONVEYOR_INTERVAL = 6;

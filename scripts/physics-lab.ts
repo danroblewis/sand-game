@@ -2,13 +2,13 @@
 // Usage: npx vite-node scripts/physics-lab.ts [experiment-name]
 // Prints, for each experiment, the fill of each box (in cells) and what is left in each sand box
 // after every drag has settled. The rules of thumb at the top of src/levels/index.ts come from here.
-import type { BoxDef, LevelDef, ShapeName, SpringDef } from '../src/core/types';
+import type { BoxDef, ConveyorDef, LevelDef, ShapeName } from '../src/core/types';
 import { describeState, replayLevel } from '../src/levels/replay';
 
 const R = 1, O = 2, Y = 3, G = 4, B = 6;
 type L = [number, number][];
-const lvl = (w: number, h: number, sb: [number, number, number, number, L][], boxes: BoxDef[], springs: SpringDef[] = []): LevelDef => ({
-  id: 'lab', name: 'lab', width: w, height: h, springs,
+const lvl = (w: number, h: number, sb: [number, number, number, number, L][], boxes: BoxDef[], conveyors: ConveyorDef[] = []): LevelDef => ({
+  id: 'lab', name: 'lab', width: w, height: h, conveyors,
   sandBoxes: sb.map(([x, y, sw, sh, layers]) => ({ x, y, w: sw, h: sh, layers: layers.map(([color, amount]) => ({ color, amount })) })),
   boxes,
 });
@@ -148,11 +148,11 @@ run('Z2 2x2 side O after R caught', lvl(7, 9, [[0, 0, 2, 2, [[R, 2], [O, 2]]]], 
 run('Z3 1x2 side O after R caught', lvl(7, 9, [[0, 0, 2, 2, [[R, 2], [O, 2]]]], [box('2x1', 4, 8, R), box('1x2', 4, 4, 2)]), ['box#0 -> (0,2)', 'box#1 -> (2,0)']);
 run('Z4 2x2 low side O after R caught', lvl(7, 9, [[0, 0, 2, 2, [[R, 2], [O, 2]]]], [box('2x1', 4, 8, R), box('2x2', 4, 4, 2)]), ['box#0 -> (0,2)', 'box#1 -> (2,1)']);
 
-// ---- springs (2026-10-30) ----
-// SA. Up-spring lane under a 2-wide sand box: load blue then red 2x1 into the lane.
-run('SA up lane B then R', lvl(6, 10, [[2, 0, 2, 2, [[B, 2], [R, 2]]]], [box('2x1', 0, 9, B), box('2x1', 4, 9, R)], [{ x: 2, y: 9, dir: 'up' }]), ['box#0 -> (2,8)', 'box#1 -> (2,8)']);
-run('SA2 up lane stacked at once', lvl(6, 10, [[2, 0, 2, 3, [[B, 2], [R, 2], [G, 2]]]], [box('2x1', 0, 9, B), box('2x1', 4, 9, R), box('2x1', 0, 8, G)], [{ x: 2, y: 9, dir: 'up' }]), ['box#1 -> (2,7)', 'box#0 -> (2,8)']);
-// SB. Sideways spring pushing 1x2 boxes against a sand box's side (top layer drains in turn).
-run('SB side lane', lvl(8, 6, [[0, 1, 2, 3, [[B, 2], [R, 2], [G, 2]]]], [box('1x2', 4, 0, G), box('1x2', 5, 0, R), box('1x2', 6, 0, B)], [{ x: 7, y: 2, dir: 'left' }]), ['box#2 -> (6,2)', 'box#1 -> (5,2)', 'box#0 -> (4,2)']);
-// SC. Frozen box in a lane blocks the push.
-run('SC frozen in lane', lvl(6, 10, [[2, 0, 2, 2, [[B, 2], [R, 2]]]], [box('2x1', 2, 5, R, 1), box('2x1', 4, 9, B), box('1x1', 0, 0, G)], [{ x: 2, y: 9, dir: 'up' }]), ['box#1 -> (2,8)']);
+// ---- conveyors (2026-10-30) ----
+// SA. Up belt under a 2-wide sand box: drop blue then red 2x1 on it.
+run('SA up belt B then R', lvl(6, 10, [[2, 0, 2, 2, [[B, 2], [R, 2]]]], [box('2x1', 0, 9, B), box('2x1', 4, 9, R)], [{ x: 2, y: 9, dir: 'up', length: 7 }]), ['box#0 -> (2,9)', 'box#1 -> (2,9)']);
+run('SA2 up belt queue loaded at once', lvl(6, 10, [[2, 0, 2, 3, [[B, 2], [R, 2], [G, 2]]]], [box('2x1', 0, 9, B), box('2x1', 4, 9, R), box('2x1', 0, 8, G)], [{ x: 2, y: 9, dir: 'up', length: 6 }]), ['box#0 -> (2,8)', 'box#1 -> (2,9)', 'box#2 -> (2,9)']);
+// SB. Left belt pressing 1x2 boxes against a sand box's side at the top two rows.
+run('SB side belt', lvl(8, 6, [[0, 1, 2, 3, [[B, 2], [R, 2], [G, 2]]]], [box('1x2', 4, 4, G), box('1x2', 5, 4, R)], [{ x: 7, y: 1, dir: 'left', length: 5 }]), ['box#0 -> (6,1)', 'box#1 -> (7,1)']);
+// SC. Frozen box on the belt holds the queue.
+run('SC frozen on belt', lvl(6, 10, [[2, 0, 2, 2, [[B, 2], [R, 2]]]], [box('2x1', 2, 5, R, 1), box('2x1', 4, 9, B), box('1x1', 0, 0, G)], [{ x: 2, y: 9, dir: 'up', length: 7 }]), ['box#1 -> (2,9)']);

@@ -103,25 +103,38 @@ export function validateLevel(level: LevelDef): string[] {
     }
   });
 
-  // Springs: one cell each, an obstacle like a sand box; the cell in front must be on the board
-  // and must not be a sand box (the spring could never push anything).
+  // Conveyors: a strip of `length` cells from (x, y) in `dir`. The whole strip must be on the board
+  // and must not overlap sand boxes or other conveyors; boxes may start on a belt (belt cells are
+  // walkable), and whatever lies beyond the strip end is fine.
   const DIRS: Record<string, [number, number]> = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
-  (level.springs ?? []).forEach((sp, i) => {
-    const label = `spring#${i}(${sp.dir}@${sp.x},${sp.y})`;
-    const d = DIRS[sp.dir];
+  const belt = new Array<string>(W * H).fill('');
+  (level.conveyors ?? []).forEach((cv, i) => {
+    const label = `conveyor#${i}(${cv.dir}@${cv.x},${cv.y}x${cv.length})`;
+    const d = DIRS[cv.dir];
     if (!d) {
       p.push(`${tag}: ${label} has an unknown direction`);
       return;
     }
-    if (!(isInt(sp.x) && isInt(sp.y)) || sp.x < 0 || sp.y < 0 || sp.x >= W || sp.y >= H) {
-      p.push(`${tag}: ${label} out of bounds`);
+    if (!(isInt(cv.length) && cv.length >= 1)) {
+      p.push(`${tag}: ${label} length must be a positive integer`);
       return;
     }
-    claim(sp.x, sp.y, label);
-    const fx = sp.x + d[0];
-    const fy = sp.y + d[1];
-    if (fx < 0 || fy < 0 || fx >= W || fy >= H) p.push(`${tag}: ${label} faces the board edge`);
-    else if (owner[fy * W + fx].startsWith('sandBox')) p.push(`${tag}: ${label} faces a sand box`);
+    if (!(isInt(cv.x) && isInt(cv.y))) {
+      p.push(`${tag}: ${label} position must be integer`);
+      return;
+    }
+    for (let k = 0; k < cv.length; k++) {
+      const x = cv.x + d[0] * k;
+      const y = cv.y + d[1] * k;
+      if (x < 0 || y < 0 || x >= W || y >= H) {
+        p.push(`${tag}: ${label} runs out of bounds at (${x},${y})`);
+        return;
+      }
+      const o = owner[y * W + x];
+      if (o.startsWith('sandBox')) p.push(`${tag}: ${label} overlaps ${o} at (${x},${y})`);
+      if (belt[y * W + x]) p.push(`${tag}: ${label} overlaps ${belt[y * W + x]} at (${x},${y})`);
+      else belt[y * W + x] = label;
+    }
   });
 
   // Conservation per color.

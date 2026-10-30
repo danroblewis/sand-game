@@ -44,6 +44,8 @@ export function attachPointer(deps: PointerDeps): () => void {
     if (!d) return;
     drag = null;
     view.dragBoxId = null;
+    // Release: conveyors may carry the box again.
+    if (d.state.heldBoxId === d.boxId) d.state.heldBoxId = null;
     if (d.moved && d.state === getState()) d.state.moves += 1;
     if (canvas.hasPointerCapture(d.pointerId)) canvas.releasePointerCapture(d.pointerId);
   };
@@ -72,6 +74,8 @@ export function attachPointer(deps: PointerDeps): () => void {
     drag = { pointerId: e.pointerId, boxId: box.id, state, offX: g.x - box.x, offY: g.y - box.y, moved: false };
     view.selectedBoxId = box.id;
     view.dragBoxId = box.id;
+    // Held boxes are never carried by conveyors (and block boxes behind them).
+    state.heldBoxId = box.id;
     canvas.setPointerCapture(e.pointerId);
     canvas.style.cursor = 'grabbing';
   };
@@ -91,15 +95,8 @@ export function attachPointer(deps: PointerDeps): () => void {
     }
     const g = renderer.pixelToGrid(px, py);
     // Round (rather than floor) so the box follows the finger with half-cell hysteresis.
-    let tx = Math.round(g.x - drag.offX);
-    let ty = Math.round(g.y - drag.offY);
-    // A spring is pushing this box: don't even try to drag it backwards (no jitter, no fight).
-    switch (box.pushDir) {
-      case 'up': ty = Math.min(ty, box.y); break;
-      case 'down': ty = Math.max(ty, box.y); break;
-      case 'left': tx = Math.min(tx, box.x); break;
-      case 'right': tx = Math.max(tx, box.x); break;
-    }
+    const tx = Math.round(g.x - drag.offX);
+    const ty = Math.round(g.y - drag.offY);
     if (tx !== box.x || ty !== box.y) {
       if (moveBoxToward(state, box.id, tx, ty) > 0) drag.moved = true;
     }

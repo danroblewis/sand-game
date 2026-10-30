@@ -31,8 +31,7 @@ export function boxAtCell(state: GameState, gx: number, gy: number): Box | undef
 
 /**
  * Occupancy grid (row-major, width*height): 0 = empty, -(sandBoxId+1) for sand boxes,
- * -(sandBoxes.length+springId+1) for springs, boxId+1 for active boxes. `excludeBoxId` leaves that
- * box out.
+ * boxId+1 for active boxes. `excludeBoxId` leaves that box out.
  */
 export function buildOccupancy(state: GameState, excludeBoxId = -1): Int32Array {
   const { width, height } = state;
@@ -42,8 +41,6 @@ export function buildOccupancy(state: GameState, excludeBoxId = -1): Int32Array 
       for (let x = sb.x; x < sb.x + sb.w; x++)
         if (x >= 0 && y >= 0 && x < width && y < height) occ[y * width + x] = -(sb.id + 1);
   }
-  for (const s of state.springs)
-    if (s.x >= 0 && s.y >= 0 && s.x < width && s.y < height) occ[s.y * width + s.x] = -(state.sandBoxes.length + s.id + 1);
   for (const b of state.boxes) {
     if (b.state !== 'active' || b.id === excludeBoxId) continue;
     for (const c of b.cells) {
@@ -55,14 +52,14 @@ export function buildOccupancy(state: GameState, excludeBoxId = -1): Int32Array 
   return occ;
 }
 
-/** All cells in bounds, overlapping no sand box, no spring and no other active box. */
+/** All cells in bounds, overlapping no sand box and no other active box (conveyor belts are
+ *  walkable, not obstacles). */
 export function canPlace(state: GameState, box: Box, x: number, y: number): boolean {
   for (const c of box.cells) {
     const gx = x + c.x;
     const gy = y + c.y;
     if (gx < 0 || gy < 0 || gx >= state.width || gy >= state.height) return false;
     if (sandBoxAtCell(state, gx, gy)) return false;
-    for (const s of state.springs) if (s.x === gx && s.y === gy) return false;
     for (const o of state.boxes) {
       if (o === box || o.state !== 'active') continue;
       if (boxCoversCell(o, o.x, o.y, gx, gy)) return false;
@@ -80,24 +77,7 @@ function canMove(box: Box | undefined): box is Box {
   return !!box && box.state === 'active' && box.frozen === 0;
 }
 
-/** Would (dx, dy) move the box against the spring pushing it? */
-function againstPush(box: Box, dx: number, dy: number): boolean {
-  switch (box.pushDir) {
-    case 'up':
-      return dy > 0;
-    case 'down':
-      return dy < 0;
-    case 'left':
-      return dx > 0;
-    case 'right':
-      return dx < 0;
-    default:
-      return false;
-  }
-}
-
 function step(state: GameState, box: Box, dx: number, dy: number): boolean {
-  if (againstPush(box, dx, dy)) return false;
   if (!canPlace(state, box, box.x + dx, box.y + dy)) return false;
   box.x += dx;
   box.y += dy;

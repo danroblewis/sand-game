@@ -193,27 +193,26 @@ Completion: quick scale-up + fade pop (~250 ms) with a few sand sparks. Thaw: br
 Responsive: the board scales to fit the viewport (both portrait phone and desktop), pointer events
 work for touch and mouse.
 
-## Springs
+## Conveyors
 
-A **spring** is a fixed one-cell tile (`LevelDef.springs`, `SpringDef {x, y, dir}`) that pushes
-the contiguous stack of boxes in front of it. Rules:
-- The spring's **arm reaches along its lane**: scan from the cell in front of the spring through
-  empty cells to the first box in the lane (a sand box, another spring, or the board edge ends the
-  lane; an empty lane does nothing). The **stack** starts with that box; if moving the set one cell
-  in `dir` would overlap another active unfrozen box, that box joins the set; repeat. The stack is
-  recomputed every step so `pushDir`/`loaded` are always current. If any cell the set would move into is out of bounds, a sand box, a spring,
-  or a frozen box, the stack is **blocked** (spring `loaded = true`), else the whole set moves one
-  cell in `dir` (emit `springPushed`, no `moves` increment, `shakeBox` each pushed box).
-- Pushes happen inside `stepGame`, at most one cell every `SPRING_INTERVAL` (4) steps per spring,
-  so a stack visibly launches rather than teleports.
-- While a box is in a spring's stack its `pushDir` is set; `tryMoveBox`/`moveBoxToward` refuse to
-  move it against that direction (sideways and along the push are fine). Boxes can be dragged into
-  or out of a lane; the spring reacts next step.
-- Springs are obstacles for `canPlace` like sand boxes. Validator: in bounds, no overlap with sand
-  boxes, boxes, or other springs; the cell in front must be inside the board.
-- Design purpose: a column of boxes between a spring and a sand box drains the sand box in a fixed
-  sequence; when the front box pops the next is pushed into contact. The player chooses what goes
-  into the lane and in which order.
+A **conveyor** (`LevelDef.conveyors`, `ConveyorDef {x, y, dir, length}`) is a visible strip of
+`length` grid cells starting at (x, y) and running in `dir`, usually ending at a sand box face.
+It replaces the earlier spring idea, which reached invisibly along a lane and grabbed boxes.
+- Any active, unfrozen box with at least one cell on the strip **rides** it: every
+  `CONVEYOR_INTERVAL` (6) steps, boxes on the belt are processed front-to-back (closest to the end
+  first) and each moves one cell in `dir` if `canPlace` allows (sand boxes, frozen boxes, the board
+  edge, boxes that did not move, and the held box block it). So a queue compacts toward the end,
+  and when the front box pops the queue advances.
+- A box the player is holding (`state.heldBoxId`, set by the input layer on drag start, cleared on
+  release) is never carried and blocks boxes behind it. Dragging on, off, along, or against the
+  belt is all allowed; after release the belt takes over.
+- Belt cells are walkable and are NOT obstacles for `canPlace`; conveyors must not overlap sand
+  boxes or other conveyors (validator).
+- Belt moves emit one `conveyed` event per step with the moved box ids, don't count as `moves`, and
+  `shakeBox` each moved box. `box.pushDir` records the last belt direction for rendering.
+- Visual: a dark strip with rollers at both ends and animated chevrons crawling in `dir`.
+- Design purpose: a lane of boxes pressed against a sand box drains it in the order the lane was
+  loaded; the player chooses what goes on the belt and when.
 
 ## Non-goals (v1)
 

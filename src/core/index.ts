@@ -32,5 +32,4 @@ export {
 export { gameSpace, invalidateSpace, applyPull, chainPush } from './transfer';
 export type { GameSpace, Puller } from './transfer';
 export { createGame, stepGame, checkCompletions, boxComplete, dissolvedGrains } from './game';
-export { applySprings, springStack, springAtCell, DIR_VEC } from './springs';
-export type { Stack } from './springs';
+export { applyConveyors, buildConveyor, conveyorAtCell, DIR_VEC } from './conveyors';

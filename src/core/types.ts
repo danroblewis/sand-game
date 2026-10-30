@@ -75,13 +75,15 @@ export interface BoxDef {
 
 export type Dir = 'up' | 'down' | 'left' | 'right';
 
-/** A fixed spring tile. It occupies one grid cell and pushes the contiguous stack of boxes in front
- *  of it (in `dir`) one cell at a time until the stack is blocked by a sand box, a frozen box, another
- *  spring, or the board edge. When the front box pops, the stack is pushed up again. */
-export interface SpringDef {
+/** A conveyor belt: a strip of `length` grid cells starting at (x, y) and running in `dir`. Boxes
+ *  with any cell on the strip ride it one cell per CONVEYOR_INTERVAL steps toward the end, queueing
+ *  up behind whatever blocks them (typically a sand box face). The strip is walkable: boxes can be
+ *  dragged on or off it. A box the player is holding (`GameState.heldBoxId`) is not carried. */
+export interface ConveyorDef {
   x: number;
   y: number;
   dir: Dir;
+  length: number;
 }
 
 export interface LevelDef {
@@ -92,7 +94,7 @@ export interface LevelDef {
   height: number;
   sandBoxes: SandBoxDef[];
   boxes: BoxDef[];
-  springs?: SpringDef[];
+  conveyors?: ConveyorDef[];
   /** Optional one-line hint shown in the HUD. */
   hint?: string;
   /** Optional authored solution as drag steps "box#i -> (x,y)" (i = index into `boxes`). Levels are
@@ -133,8 +135,7 @@ export interface Box {
   color: ColorId;
   /** Remaining completions needed before this box unfreezes. 0 = movable and accepting sand. */
   frozen: number;
-  /** Direction a spring is currently pushing this box in, or null. The player cannot move the box
-   *  against this direction while it is set. */
+  /** Direction a conveyor carried this box in on its last belt step, or null (for rendering). */
   pushDir: Dir | null;
   /** Fine grid region sized bw*N by bh*N with a mask built from `cells`. */
   region: SandRegion;
@@ -150,18 +151,19 @@ export interface SandBoxState {
   region: SandRegion;
 }
 
-export interface SpringState {
+export interface ConveyorState {
   id: number;
   x: number;
   y: number;
   dir: Dir;
-  /** True while the spring has a stack in front of it that is blocked (compressed look). */
-  loaded: boolean;
+  length: number;
+  /** Cells of the strip, in order from start to end. */
+  cells: Vec[];
 }
 
 export type GameEvent =
   | { type: 'boxCompleted'; boxId: number; x: number; y: number; cells: Vec[]; color: ColorId }
-  | { type: 'springPushed'; springId: number; boxIds: number[]; dir: Dir }
+  | { type: 'conveyed'; conveyorId: number; boxIds: number[]; dir: Dir }
   | { type: 'boxUnfrozen'; boxId: number }
   | { type: 'boxMoved'; boxId: number; x: number; y: number }
   | { type: 'transfer'; count: number }
@@ -175,7 +177,9 @@ export interface GameState {
   height: number;
   sandBoxes: SandBoxState[];
   boxes: Box[];
-  springs: SpringState[];
+  conveyors: ConveyorState[];
+  /** Box currently held by the pointer (set by the input layer); conveyors leave it alone. */
+  heldBoxId: number | null;
   /** Boxes completed so far (drives frozen counters). */
   completedCount: number;
   /** Player moves (grid steps). Informational only; there is no timer and no scoring. */
