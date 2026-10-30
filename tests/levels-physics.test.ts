@@ -26,3 +26,17 @@ describe('levels win in the real simulation', () => {
     );
   }
 });
+
+// No timers: a hero solution must not depend on reaching a spot before a drain finishes. Replaying
+// with a slow walk (2 s per input instead of 0.1 s; entries still settle in between) must still win.
+// A level that only wins by hurrying (or would need a no-wait " &" entry) fails here.
+describe('hero levels do not race the sand', () => {
+  for (const level of LEVELS.filter((l) => l.hero)) {
+    it(`${level.id} wins at a slow walking pace`, () => {
+      const r = replayLevel(level, level.solution ?? [], { seed: 7, heroInputSteps: 120 });
+      expect(r.won, `${level.id}: ${r.why} ${describeState(r.state)}`).toBe(true);
+      for (const step of level.solution ?? []) expect(step.includes('&'), `${level.id}: no-wait entry ${step}`).toBe(false);
+    }, 60_000);
+  }
+});
+

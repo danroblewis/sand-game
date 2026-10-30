@@ -118,7 +118,9 @@ const wrow = (y: number, x0: number, x1: number): [number, number][] =>
 //   boxes above him, rides a shaft down when a pin he pushed was his floor, and falls when the box he
 //   stands on pops. A step box pushed against a wall is stuck for good, so it must drain where it
 //   stands, and never beside a buried band of its own color (it wedges and jams the tray): lean it on
-//   a frozen box instead and let it slide into the frozen box's place after the thaw.
+//   a frozen box instead, and push it away from that side once the frozen box has melted. NO RACES:
+//   no entry may depend on getting somewhere before a drain ends; the physics test replays every
+//   hero solution at 2 s per input and it must still win.
 // Map legend in the level comments: # sand box, capital letter = box (R red, O orange, Y yellow,
 // G green, T teal, B blue, P purple, K pink, W white), lower-case = frozen box, ^ v < > = empty belt
 // cell running in that direction, = wall, @ hero, . empty.
@@ -1202,12 +1204,14 @@ export const LEVELS: LevelDef[] = [
   //   . . . . . . . .
   //   . . . . . . . .
   //   . . . . . . Y .
-  //   . . . . . # = .
-  //   . . . . w # = .
+  //   . . . . . = = .
+  //   . # . . w # = .
   //   . @ K . w # # .
-  // Solution: Push the pink step against the frozen white and climb onto the ledge; push the yellow
-  // off the right end and come straight back down onto the pink. The pop thaws the white, which drains
-  // and leaves; push the pink into its spot to drain the bottom band.
+  // Solution: Push the pink against the frozen white and climb onto the ledge; push the yellow off the
+  // right end onto its tray. Its pop thaws the white, which drains and leaves. Stay up there: once
+  // the white is gone, walk down into its spot (right of the pink) and push the pink left under the
+  // pink sand. Coming down early lands you left of the pink, which can then only go the wrong way.
+  // No race: every entry settles before the next (tests/levels-physics.test.ts walks it slowly).
   {
     id: 'wrong-side',
     name: 'Wrong Side',
@@ -1215,11 +1219,11 @@ export const LEVELS: LevelDef[] = [
     height: 10,
     hero: { x: 1, y: 9 },
     boxGravity: true,
-    sandBoxes: [sb(5, 7, 1, 3, [[K, 1], [W, 2]]), sb(6, 9, 1, 1, [[Y, 1]])],
-    walls: wl([6, 7], [6, 8]),
+    sandBoxes: [sb(1, 8, 1, 1, [[K, 1]]), sb(5, 8, 1, 2, [[W, 2]]), sb(6, 9, 1, 1, [[Y, 1]])],
+    walls: wl([5, 7], [6, 7], [6, 8]),
     boxes: [bx('1x1', 2, 9, K), bx('1x2', 4, 8, W, 1), bx('1x1', 6, 6, Y)],
-    hint: 'Push the pink step against the frozen box and climb. When the yellow pops the white thaws and melts away, so come back down on the pink side first: from the other side the step can only be pushed the wrong way.',
-    solution: ['RRRRRLLLL', 'R'],
+    hint: 'Push the pink step against the frozen box and climb. The pink must end up under the pink sand on the left, and you can only push it there from its right: wait up top until the white has melted, then come down where it stood.',
+    solution: ['RRRRR', 'LLLL'],
   },
   //   . . . = . . . .
   //   . . . B = . . .

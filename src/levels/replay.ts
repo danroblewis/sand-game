@@ -10,6 +10,9 @@ export interface ReplayOptions {
   quietSteps?: number;
   /** Max sim steps to wait after one drag. */
   maxStepsPerDrag?: number;
+  /** Hero levels: sim steps between two inputs of one entry (default HERO_INPUT_STEPS). A slow pace
+   *  proves no entry has to beat a drain (tests/levels-physics.test.ts). */
+  heroInputSteps?: number;
   /** Called after each drag has settled (for --verbose output). */
   onDrag?: (step: string, state: GameState, settleSteps: number) => void;
 }
@@ -162,7 +165,7 @@ export function replayLevel(level: LevelDef, plan: string[], opts: ReplayOptions
         }
         inputs++;
         // a few steps per input, more while the hero is still falling (gravity levels)
-        for (let i = 0; (i < HERO_INPUT_STEPS || heroCanFall(state) || state.hero.falling > 0) && i < 600 && !state.won; i++) {
+        for (let i = 0; (i < (opts.heroInputSteps ?? HERO_INPUT_STEPS) || heroCanFall(state) || state.hero.falling > 0) && i < 600 && !state.won; i++) {
           stepGame(state);
           s++;
         }

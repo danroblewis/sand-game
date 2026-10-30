@@ -260,5 +260,5 @@ runSeeds('HA2 push up past a sand box side (leak)', hlvl(lvl(6, 8, [[3, 0, 2, 3,
 // sand-box sides they will slide past (join-and-split: 0.23 leaked before the fix).
 // Riding a draining box down when it pops and climbing are proven by the levels themselves
 // (push-the-pin, pusher, step-up, wrong-side).
-// Wrong Side: from the yellow landing to the white step's pop is ~5-6 s (yellow 1x1 side drain
-// ~2.5 s, then the thawed 1x2 drains two cells): the hero needs 4 inputs to get back down.
+// Wrong Side v1 gave the hero ~5-6 s (yellow 1x1 side drain ~2.5 s + the thawed 1x2 draining two
+// cells) to get back down before the step melted: a timer. v2 waits up top instead (spatial).
