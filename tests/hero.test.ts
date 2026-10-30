@@ -184,3 +184,40 @@ describe('snapshot / restore', () => {
     expect(key(a)).toBe(key(b));
   });
 });
+
+describe('hero rides belts', () => {
+  const belt = (p: Partial<LevelDef>): LevelDef =>
+    hero({ width: 6, height: 2, conveyors: [{ x: 0, y: 1, dir: 'right', length: 5, interval: 3 }], ...p }, { x: 0, y: 1 });
+
+  it('rides to the end of the strip on the belt steps, facing along it; walking off stops the ride', () => {
+    const s = createGame({ ...belt({}), hero: { x: 1, y: 1 } });
+    s.hero!.facing = 'left';
+    const ev = run(s, 1); // tick 0: belt step
+    expect(pos(s)).toEqual([2, 1]);
+    expect(s.hero!.facing).toBe('right');
+    expect(ev).toContainEqual({ type: 'heroMoved', x: 2, y: 1, dir: 'right', climbed: false });
+    run(s, 2);
+    expect(pos(s)).toEqual([2, 1]); // not before the next belt step
+    run(s, 3 * 3);
+    expect(pos(s)).toEqual([5, 1]); // carried off the end of the strip (4,1) onto (5,1), then stops
+    expect(s.moves).toBe(0); // riding is not a move
+    // walking off: step up off the belt and stay
+    const t = createGame(belt({}));
+    expect(moveHero(t, 'up')).toBe(true);
+    run(t, 4 * 3);
+    expect(pos(t)).toEqual([0, 0]);
+  });
+
+  it('pushes a box ahead when it can, and stops when blocked', () => {
+    const s = createGame(belt({ boxes: [{ shape: '1x1', x: 2, y: 1, color: 1 }], walls: [{ x: 5, y: 1 }] }));
+    // the box rides too; the hero follows; at the wall both stop
+    run(s, 7 * 3);
+    expect([s.boxes[0].x, pos(s)]).toEqual([4, [3, 1]]);
+    // a box off the belt ahead of a riding hero gets pushed
+    const p = createGame({ ...hero({ width: 6, height: 2, conveyors: [{ x: 0, y: 1, dir: 'right', length: 2, interval: 3 }], boxes: [{ shape: '1x1', x: 2, y: 1, color: 1 }] }, { x: 1, y: 1 }) });
+    const ev = run(p, 1);
+    expect([p.boxes[0].x, pos(p)]).toEqual([3, [2, 1]]);
+    expect(ev.some((e) => e.type === 'heroPushed')).toBe(true);
+  });
+});
+

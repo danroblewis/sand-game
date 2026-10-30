@@ -84,6 +84,8 @@ export interface ConveyorDef {
   y: number;
   dir: Dir;
   length: number;
+  /** Steps per cell for this belt (default CONVEYOR_INTERVAL). Loops in big maps use faster belts. */
+  interval?: number;
 }
 
 export interface LevelDef {
@@ -103,6 +105,10 @@ export interface LevelDef {
   /** Hero (Sokoban) mode: the player is a character starting at this cell who walks and pushes
    *  boxes. Boxes are never dragged in hero levels. Combine with boxGravity for platform-Sokoban. */
   hero?: Vec;
+  /** Camera for boards larger than the screen. 'fit' (default) scales the whole board to fit;
+   *  'scroll' follows the focus (hero, held box) smoothly at a fixed cell size; 'rooms' snaps
+   *  between screen-sized rooms (square reveal). */
+  camera?: 'fit' | 'scroll' | 'rooms';
   /** Optional one-line hint shown in the HUD. */
   hint?: string;
   /** Optional authored solution as drag steps "box#i -> (x,y)" (i = index into `boxes`). Levels are
@@ -167,6 +173,8 @@ export interface ConveyorState {
   y: number;
   dir: Dir;
   length: number;
+  /** Steps per cell for this belt. */
+  interval: number;
   /** Cells of the strip, in order from start to end. */
   cells: Vec[];
   /** 0..1 progress toward the next belt step (for continuous rendering of riders). */

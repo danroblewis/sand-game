@@ -292,6 +292,27 @@ Chapter 1 does not). Rules:
   landing; tap-to-walk on touch (BFS through free cells; walking into a box pushes it); a 4-way
   d-pad overlay on phones; Tab/box selection disabled in hero levels; an Undo button.
 
+## Big maps (Chapter 5 "Expanse")
+
+Boards may be much larger than the screen (e.g. 16x16 to 32x14). `LevelDef.camera` selects how
+they are shown: `'fit'` (default, today's behaviour), `'scroll'` (fixed cell size, viewport follows
+the focus with a soft lerp, clamped to the board; focus = hero in hero levels, else the held box or
+the last moved box), `'rooms'` (the board is divided into screen-sized rooms; the view snaps to the
+room containing the focus, like a square reveal). Both large modes have: an overview (pinch or a
+key / button) that shows the whole board scaled down and snaps back; off-screen pings (a marker at
+the screen edge pointing to a pop, thaw, or landing that happened out of view, fading after ~1 s);
+edge-scroll while dragging in drag levels; a faster hero walk on long tap-to-walk paths (speed up
+after 3 steps). Frozen counters are visible in the overview.
+
+Belts return as **circulation**: belts may form loops (contiguous strips whose directions chain,
+e.g. right along a top row, down, left, up). `ConveyorDef.interval` makes a belt faster or slower
+than the default. A box rides the belt under its first cell (top-left of its shape) so corner
+handoffs are unambiguous; use 1x1 or belt-aligned shapes on loops. The hero rides belts too (moving
+walkways) when standing on one and not blocked. Design use: a loop carries a set of boxes past
+several sand box stations; the player pushes a box off the loop at the right station or lets it
+circulate until the station is ready; long same-color chains across the map act as one container
+(rule 6b), so a chain can feed a far-away piece.
+
 ## Non-goals (v1)
 
 No timer, no stars, no monetisation, no accounts, no level editor, no sound (maybe later).

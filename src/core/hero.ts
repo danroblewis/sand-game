@@ -25,6 +25,11 @@ export function heroSupported(state: GameState): boolean {
   return !heroCellFree(state, h.x, h.y + 1);
 }
 
+/** Can the hero push this box one cell by (dx, dy)? (active, unfrozen, fits; hero cell ignored) */
+export function heroCanPush(state: GameState, box: Box, dx: number, dy: number): boolean {
+  return box.state === 'active' && box.frozen === 0 && canPush(state, box, box.x + dx, box.y + dy);
+}
+
 /** canPlace for a pushed box, ignoring the hero's own cell (the hero steps into the vacated cell). */
 function canPush(state: GameState, box: Box, x: number, y: number): boolean {
   const h = state.hero;

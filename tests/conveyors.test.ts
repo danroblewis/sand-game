@@ -129,7 +129,7 @@ describe('conveyors', () => {
     expect(s.boxes.map((b) => b.y)).toEqual([5, 6]);
   });
 
-  it('boxes partially on the strip ride; dragging against the belt is allowed', () => {
+  it('a box rides only if its first cell is on the strip; dragging against the belt is allowed', () => {
     const s = createGame(level({
       width: 6,
       height: 4,
@@ -137,8 +137,13 @@ describe('conveyors', () => {
       conveyors: [{ x: 1, y: 3, dir: 'up', length: 3 }], // column 1, rows 3..1
     }));
     steps(s, 1);
-    expect([s.boxes[0].x, s.boxes[0].y]).toEqual([0, 0]); // only its right cell was on the strip
-    expect(tryMoveBox(s, 0, 0, 1)).toBe(true); // against the belt
+    // A box rides the belt under its FIRST cell (top-left) only: here only the right cell is on
+    // the strip, so it stays put.
+    expect([s.boxes[0].x, s.boxes[0].y]).toEqual([0, 1]);
+    expect(tryMoveBox(s, 0, 1, 0)).toBe(true); // now its first cell (1,1) is on the strip
+    steps(s, CONVEYOR_INTERVAL);
+    expect([s.boxes[0].x, s.boxes[0].y]).toEqual([1, 0]);
+    expect(tryMoveBox(s, 0, 0, 1)).toBe(true); // dragging against the belt is allowed
   });
 
   it('is deterministic', () => {
@@ -240,3 +245,79 @@ describe('walls', () => {
     expect(createGame(level({})).walls).toEqual([]);
   });
 });
+
+describe('belt loops, handoffs and per-belt speeds', () => {
+  // 4x4 ring: right along the top, down the right side, left along the bottom, up the left side.
+  const ring = (boxes: LevelDef['boxes'], interval = 1, extra: Partial<LevelDef> = {}): LevelDef =>
+    level({
+      width: 4,
+      height: 4,
+      boxes,
+      conveyors: [
+        { x: 0, y: 0, dir: 'right', length: 3, interval },
+        { x: 3, y: 0, dir: 'down', length: 3, interval },
+        { x: 3, y: 3, dir: 'left', length: 3, interval },
+        { x: 0, y: 3, dir: 'up', length: 3, interval },
+      ],
+      ...extra,
+    });
+  const PERIM = [[0, 0], [1, 0], [2, 0], [3, 0], [3, 1], [3, 2], [3, 3], [2, 3], [1, 3], [0, 3], [0, 2], [0, 1]];
+
+  it('a 1x1 circulates a loop of four belts indefinitely, handing off at every corner', () => {
+    const s = createGame(ring([{ shape: '1x1', x: 0, y: 0, color: 1 }]));
+    const b = s.boxes[0];
+    for (let t = 0; t < 36; t++) {
+      expect([b.x, b.y]).toEqual(PERIM[t % 12]);
+      expect(riderNextFree(s, b)).toBe(['right', 'down', 'left', 'up'][Math.floor((t % 12) / 3)]);
+      steps(s, 1);
+    }
+    expect([b.x, b.y]).toEqual(PERIM[0]);
+  });
+
+  it('a queue follows its leader around a corner in one belt step', () => {
+    const s = createGame(ring([
+      { shape: '1x1', x: 3, y: 0, color: 1 }, // on the corner: first cell on the down belt
+      { shape: '1x1', x: 2, y: 0, color: 2 }, // right behind it on the top belt
+    ]));
+    steps(s, 1);
+    expect(s.boxes.map((b) => [b.x, b.y])).toEqual([[3, 1], [3, 0]]);
+    expect(s.boxes.map((b) => b.pushDir)).toEqual(['down', 'right']);
+  });
+
+  it('a blocked box stops and resumes when the way clears; conveyorPlan agrees', () => {
+    const s = createGame(ring([
+      { shape: '1x1', x: 0, y: 0, color: 1 },
+      { shape: '1x1', x: 2, y: 0, color: 2 },
+    ]));
+    s.heldBoxId = 1; // the held box is not carried and blocks
+    steps(s, 3);
+    expect([s.boxes[0].x, s.boxes[0].y]).toEqual([1, 0]);
+    expect(conveyorPlan(s).has(0)).toBe(false);
+    s.heldBoxId = null;
+    expect(conveyorPlan(s)).toEqual(new Map([[1, 'right'], [0, 'right']]));
+    steps(s, 1);
+    expect(s.boxes.map((b) => [b.x, b.y])).toEqual([[2, 0], [3, 0]]);
+    // a wall ahead also stops it
+    const w = createGame(ring([{ shape: '1x1', x: 0, y: 0, color: 1 }], 1, { walls: [{ x: 2, y: 0 }] }));
+    steps(w, 5);
+    expect([w.boxes[0].x, w.boxes[0].y]).toEqual([1, 0]);
+  });
+
+  it('belts with different intervals step on their own schedules; phase is per belt', () => {
+    const s = createGame(level({
+      width: 10,
+      height: 2,
+      boxes: [{ shape: '1x1', x: 0, y: 0, color: 1 }, { shape: '1x1', x: 0, y: 1, color: 2 }],
+      conveyors: [
+        { x: 0, y: 0, dir: 'right', length: 10, interval: 2 },
+        { x: 0, y: 1, dir: 'right', length: 10, interval: 5 },
+      ],
+    }));
+    expect(s.conveyors.map((c) => c.interval)).toEqual([2, 5]);
+    expect(createGame(queue()).conveyors[0].interval).toBe(CONVEYOR_INTERVAL);
+    steps(s, 10); // ticks 0..9: fast belt steps at 0,2,4,6,8; slow at 0,5
+    expect(s.boxes.map((b) => b.x)).toEqual([5, 2]);
+    expect(s.conveyors.map((c) => c.phase)).toEqual([1 / 2, 4 / 5]);
+  });
+});
+
