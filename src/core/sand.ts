@@ -143,6 +143,23 @@ export interface Slot {
    *  color c (empty range when none). Slumps toward it skip the P_SLUMP roll. */
   openLo: Int16Array;
   openHi: Int16Array;
+  /** Box slots: the connected same-color group (rule 6b) this box belongs to, one container for
+   *  sand; null for sand boxes. */
+  group: BoxGroup | null;
+}
+
+/** A connected group of same-color boxes, treated as one container. */
+export interface BoxGroup {
+  slots: Slot[];
+  color: number;
+  capacity: number;
+}
+
+/** Total grains in a group. */
+export function groupCount(g: BoxGroup): number {
+  let n = 0;
+  for (const s of g.slots) n += s.region.count;
+  return n;
 }
 
 /** A fresh slot (box/sandBox owners optional). */
@@ -167,6 +184,7 @@ export function makeSlot(region: SandRegion, ox: number, oy: number, box: Box | 
     busy: false,
     openLo: new Int16Array(32).fill(32767),
     openHi: new Int16Array(32).fill(-32768),
+    group: null,
   };
 }
 
@@ -314,7 +332,7 @@ function moveTo(sp: Space, S: Slot, i: number, v: number): void {
 }
 
 /** Is the cell at (x + dx, y + dy) of sand-box slot S across an edge in a box that accepts color
- *  c and is not full (an opening of that color, occupied or not)? */
+ *  c and whose group is not full (an opening of that color, occupied or not)? */
 function opening(sp: Space, S: Slot, x: number, y: number, dx: number, dy: number, c: number): boolean {
   if (sp.W === 0 || S.box !== null) return false;
   const nx = x + dx;
@@ -326,7 +344,8 @@ function opening(sp: Space, S: Slot, x: number, y: number, dx: number, dy: numbe
   const s = sp.slotOf[wy * sp.W + wx] - 1;
   if (s < 0) return false;
   const T = sp.slots[s];
-  return T.accepting && T.color === c && T.region.count < T.region.capacity;
+  if (!T.accepting || T.color !== c) return false;
+  return T.group ? groupCount(T.group) < T.group.capacity : T.region.count < T.region.capacity;
 }
 
 /**

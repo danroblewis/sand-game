@@ -17,7 +17,8 @@ export {
   recount,
   countColor,
 } from './sand';
-export type { Slot, Space } from './sand';
+export type { Slot, Space, BoxGroup } from './sand';
+export { groupCount } from './sand';
 export {
   canPlace,
   tryMoveBox,
@@ -28,10 +29,12 @@ export {
   boxCoversCell,
   buildOccupancy,
   wallAtCell,
+  connectedGroups,
+  boxGroup,
   OCC_WALL,
   shakeBox,
 } from './grid';
 export { gameSpace, invalidateSpace, applyPull, chainPush } from './transfer';
 export type { GameSpace, Puller } from './transfer';
-export { createGame, stepGame, checkCompletions, boxComplete, dissolvedGrains, connectedGroups, boxGroup } from './game';
+export { createGame, stepGame, checkCompletions, boxComplete, dissolvedGrains } from './game';
 export { applyConveyors, buildConveyor, conveyorAtCell, conveyorPlan, riderNextFree, DIR_VEC } from './conveyors';

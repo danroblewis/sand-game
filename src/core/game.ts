@@ -6,6 +6,7 @@ import { SHAPES, shapeBounds } from './shapes';
 import { beginStep, createRegion, endStep, fillLayers, sweepSpace } from './sand';
 import { applyPull, gameSpace } from './transfer';
 import { applyConveyors, buildConveyor } from './conveyors';
+import { connectedGroups } from './grid';
 import { COMPLETION_SLACK, DISSOLVE_STEPS } from './constants';
 import { nextFloat } from './rng';
 import { touchRegion } from './sand';
@@ -163,11 +164,19 @@ export function boxComplete(box: Box): boolean {
 
 /** Remove complete boxes (full within COMPLETION_SLACK), tick frozen counters, and detect the win
  *  (all boxes removed; leftover debris in the sand boxes does not matter). Connected same-color
- *  boxes (rule 6b) complete together: a group pops only when every member is complete. */
+ *  boxes (rule 6b) are one container: a group pops, all members in one step, when its total count
+ *  is within COMPLETION_SLACK of its total capacity (one slack per group). */
 export function checkCompletions(state: GameState): void {
   let completed = false;
   for (const group of connectedGroups(state)) {
-    if (!group.every(boxComplete)) continue;
+    // One container per group: complete when the group's total is within one slack of its capacity.
+    let count = 0;
+    let capacity = 0;
+    for (const b of group) {
+      count += b.region.count;
+      capacity += b.region.capacity;
+    }
+    if (count < capacity && count < capacity - COMPLETION_SLACK) continue;
     for (const box of group) {
       box.state = 'removed';
       state.completedCount++;
@@ -194,46 +203,3 @@ export function checkCompletions(state: GameState): void {
   }
 }
 
-/** Do two boxes have cells sharing a grid edge? */
-function touching(a: Box, b: Box): boolean {
-  for (const ca of a.cells) {
-    const ax = a.x + ca.x;
-    const ay = a.y + ca.y;
-    for (const cb of b.cells) {
-      const d = Math.abs(ax - b.x - cb.x) + Math.abs(ay - b.y - cb.y);
-      if (d === 1) return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Connected groups (rule 6b): active, unfrozen boxes of the same color whose cells share a grid
- * edge, transitively. A lone box is a group of one. Groups are ordered by their lowest box id, and
- * boxes inside a group by id.
- */
-export function connectedGroups(state: GameState): Box[][] {
-  const live = state.boxes.filter((b) => b.state === 'active' && b.frozen === 0);
-  const seen = new Set<Box>();
-  const groups: Box[][] = [];
-  for (const start of live) {
-    if (seen.has(start)) continue;
-    seen.add(start);
-    const g = [start];
-    for (let k = 0; k < g.length; k++)
-      for (const o of live)
-        if (!seen.has(o) && o.color === g[k].color && touching(g[k], o)) {
-          seen.add(o);
-          g.push(o);
-        }
-    g.sort((a, b) => a.id - b.id);
-    groups.push(g);
-  }
-  return groups;
-}
-
-/** The connected group containing box `boxId` (empty if the box is not active and unfrozen). */
-export function boxGroup(state: GameState, boxId: number): Box[] {
-  for (const g of connectedGroups(state)) if (g.some((b) => b.id === boxId)) return g;
-  return [];
-}

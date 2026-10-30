@@ -6,25 +6,32 @@ import type { Box, GameState, SandRegion } from './types';
 import { P_PULL, PULL_RATE_BASE, PULL_RATE_PER_CELL, pullReach } from './constants';
 import { nextFloat, nextInt } from './rng';
 import type { Rng } from './rng';
-import { allocStamps, changed, createSpace, makeSlot } from './sand';
-import type { Slot, Space } from './sand';
+import { allocStamps, changed, createSpace, groupCount, makeSlot } from './sand';
+import { connectedGroups } from './grid';
+import type { BoxGroup, Slot, Space } from './sand';
 
 const N = GRAINS_PER_CELL;
 
-/** An active unfrozen box and the fine-cell openings it shares with sand boxes. */
+/** A connected group of active unfrozen same-color boxes (often a single box) and the fine-cell
+ *  openings its members share with sand boxes, pooled. */
 export interface Puller {
-  slot: Slot;
+  group: BoxGroup;
+  /** The group's lowest-id member (kept for older callers; check fullness with groupCount(group)
+   *  against group.capacity, not this box alone). */
   box: Box;
-  /** Flat triples: [sandBoxSlotIdx, openingLocalIdx, inletLocalIdx, ...]. The opening cell is in
-   *  the sand box, the inlet is the mirrored cell of the box across the shared edge. */
+  color: number;
+  /** Credit key: the lowest member box id. */
+  key: number;
+  /** Flat quads: [sandBoxSlotIdx, openingLocalIdx, boxSlotIdx, inletLocalIdx, ...]. The opening
+   *  cell is in the sand box, the inlet is the mirrored cell of a member box across the edge. */
   pairs: Int32Array;
-  /** Number of triples. */
+  /** Number of quads. */
   n: number;
-  /** Max grains pulled in per step. */
+  /** Max grains pulled in per step: base + per cell over all member cells. */
   rate: number;
   /** Sand-box slots the openings are in. */
   sources: Slot[];
-  /** Nothing of the box's color was in reach last time: skip until a source wakes up. */
+  /** Nothing of the group's color was in reach last time: skip until a source wakes up. */
   idle: boolean;
 }
 
@@ -41,6 +48,13 @@ export interface GameSpace extends Space {
   qSlot: Int32Array;
   qLoc: Int32Array;
   qPair: Int32Array;
+  // Chain-push scratch, indexed by slot.base + local index.
+  cpStamp: Uint32Array;
+  cpGen: number;
+  cpParent: Int32Array;
+  cpQueue: Int32Array;
+  /** Stamp index → slot index (for decoding chain-push nodes). */
+  slotOfCell: Int16Array;
 }
 
 const spaces = new WeakMap<GameState, GameSpace>();
@@ -116,47 +130,74 @@ function rebuild(state: GameState, sp: GameSpace): void {
     sp.qSlot = new Int32Array(n);
     sp.qLoc = new Int32Array(n);
     sp.qPair = new Int32Array(n);
+    sp.cpStamp = new Uint32Array(n);
+    sp.cpGen = 0;
+    sp.cpParent = new Int32Array(n);
+    sp.cpQueue = new Int32Array(n);
+    sp.slotOfCell = new Int16Array(n);
+  }
+  for (const sl of slots) sp.slotOfCell.fill(sl.idx, sl.base, sl.base + sl.region.w * sl.region.h);
+  // Groups (rule 6b): connected same-color boxes are one container.
+  const slotOfBox = new Map<Box, Slot>();
+  for (const sl of slots) if (sl.box) slotOfBox.set(sl.box, sl);
+  const groups: BoxGroup[] = [];
+  for (const g of connectedGroups(state)) {
+    const members = g.map((b) => slotOfBox.get(b)!).filter(Boolean);
+    const grp: BoxGroup = { slots: members, color: g[0].color, capacity: 0 };
+    for (const m of members) {
+      grp.capacity += m.region.capacity;
+      m.group = grp;
+    }
+    groups.push(grp);
   }
   // Openings: box in-mask cells whose orthogonal neighbour across the box border is a sand-box cell.
   sp.pullers = [];
   const DX = [0, 0, -1, 1];
   const DY = [-1, 1, 0, 0];
-  for (const s of slots) {
-    if (!s.accepting || !s.box) continue;
-    const { w, h, mask } = s.region;
+  for (const grp of groups) {
     const pairs: number[] = [];
-    for (let y = 0; y < h; y++)
-      for (let x = 0; x < w; x++) {
-        const i = y * w + x;
-        if (mask !== null && mask[i] === 0) continue;
-        for (let d = 0; d < 4; d++) {
-          const nx = x + DX[d];
-          const ny = y + DY[d];
-          if (nx >= 0 && ny >= 0 && nx < w && ny < h && (mask === null || mask[ny * w + nx] !== 0)) continue;
-          const wx = s.ox + nx;
-          const wy = s.oy + ny;
-          if (wx < 0 || wy < 0 || wx >= W || wy >= H) continue;
-          const t = sp.slotOf[wy * W + wx] - 1;
-          if (t < 0 || slots[t].sandBox === null) continue;
-          pairs.push(t, sp.localOf[wy * W + wx], i);
+    let cells = 0;
+    let key = Infinity;
+    for (const s of grp.slots) {
+      const box = s.box!;
+      cells += box.cells.length;
+      key = Math.min(key, box.id);
+      const { w, h, mask } = s.region;
+      for (let y = 0; y < h; y++)
+        for (let x = 0; x < w; x++) {
+          const i = y * w + x;
+          if (mask !== null && mask[i] === 0) continue;
+          for (let d = 0; d < 4; d++) {
+            const nx = x + DX[d];
+            const ny = y + DY[d];
+            if (nx >= 0 && ny >= 0 && nx < w && ny < h && (mask === null || mask[ny * w + nx] !== 0)) continue;
+            const wx = s.ox + nx;
+            const wy = s.oy + ny;
+            if (wx < 0 || wy < 0 || wx >= W || wy >= H) continue;
+            const t = sp.slotOf[wy * W + wx] - 1;
+            if (t < 0 || slots[t].sandBox === null) continue;
+            pairs.push(t, sp.localOf[wy * W + wx], s.idx, i);
+          }
         }
-      }
+    }
     if (pairs.length === 0) continue;
-    for (let k = 0; k < pairs.length; k += 3) {
+    for (let k = 0; k < pairs.length; k += 4) {
       const T = slots[pairs[k]];
       const ox = pairs[k + 1] % T.region.w;
-      const c = s.box.color;
+      const c = grp.color;
       if (ox < T.openLo[c]) T.openLo[c] = ox;
       if (ox > T.openHi[c]) T.openHi[c] = ox;
     }
     const sources: Slot[] = [];
-    for (let k = 0; k < pairs.length; k += 3) if (!sources.includes(slots[pairs[k]])) sources.push(slots[pairs[k]]);
+    for (let k = 0; k < pairs.length; k += 4) if (!sources.includes(slots[pairs[k]])) sources.push(slots[pairs[k]]);
     sp.pullers.push({
-      slot: s,
-      box: s.box,
+      group: grp,
+      box: grp.slots.reduce((m, sl) => (sl.box!.id < m.id ? sl.box! : m), grp.slots[0].box!),
+      color: grp.color,
+      key,
       pairs: Int32Array.from(pairs),
-      n: pairs.length / 3,
-      rate: PULL_RATE_BASE + PULL_RATE_PER_CELL * s.box.cells.length,
+      n: pairs.length / 4,
+      rate: PULL_RATE_BASE + PULL_RATE_PER_CELL * cells,
       sources,
       idle: false,
     });
@@ -185,6 +226,11 @@ export function gameSpace(state: GameState): GameSpace {
       qSlot: new Int32Array(0),
       qLoc: new Int32Array(0),
       qPair: new Int32Array(0),
+      cpStamp: new Uint32Array(0),
+      cpGen: 0,
+      cpParent: new Int32Array(0),
+      cpQueue: new Int32Array(0),
+      slotOfCell: new Int16Array(0),
     };
     spaces.set(state, sp);
     rebuild(state, sp);
@@ -208,40 +254,39 @@ export function invalidateSpace(state: GameState): void {
 // Chain push: a grain enters an occupied inlet and the box's grains shift by one along the
 // shortest path (through same-color grains) to the nearest empty cell, so the pile bulges there.
 
-let cpStamp = new Uint32Array(0);
-let cpGen = 0;
-let cpParent = new Int32Array(0);
-let cpQueue = new Int32Array(0);
-
-/** Push grain v in at `inlet` of the box slot B. Returns false if no empty cell is reachable. */
-export function chainPush(B: Slot, inlet: number, v: number, flip: boolean): boolean {
-  const r = B.region;
-  const { w, h, cells, mask } = r;
-  const n = w * h;
-  if (cpStamp.length < n) {
-    cpStamp = new Uint32Array(n);
-    cpParent = new Int32Array(n);
-    cpQueue = new Int32Array(n);
-    cpGen = 0;
-  }
-  cpGen = (cpGen + 1) >>> 0;
-  if (cpGen === 0) {
+/**
+ * Push grain v in at `inlet` of box slot B. BFS (4-connected, up first, then sideways, then down)
+ * from the inlet through same-color grains, crossing the shared edges between members of B's
+ * group, to the nearest empty in-mask cell anywhere in the group; the grains along that path shift
+ * by one (across edges as needed) and v enters at the inlet. Returns false if the group is full.
+ */
+export function chainPush(sp: GameSpace, B: Slot, inlet: number, v: number, flip: boolean): boolean {
+  const { cpStamp, cpParent, cpQueue, slotOfCell, slots } = sp;
+  sp.cpGen = (sp.cpGen + 1) >>> 0;
+  if (sp.cpGen === 0) {
     cpStamp.fill(0);
-    cpGen = 1;
+    sp.cpGen = 1;
   }
+  const gen = sp.cpGen;
   const c = v & COLOR_MASK;
+  const grp = B.group;
+  const multi = grp !== null && grp.slots.length > 1 && sp.W > 0;
+  const W = sp.W;
+  const start = B.base + inlet;
   let head = 0;
   let tail = 0;
-  cpQueue[tail++] = inlet;
-  cpStamp[inlet] = cpGen;
-  cpParent[inlet] = -1;
+  cpQueue[tail++] = start;
+  cpStamp[start] = gen;
+  cpParent[start] = -1;
   let found = -1;
-  // Neighbour order: up first (the pile bulges at the inlet), then sideways, then down.
   const sx = flip ? 1 : -1;
   while (head < tail && found < 0) {
     const cur = cpQueue[head++];
-    const x = cur % w;
-    const y = (cur - x) / w;
+    const S = slots[slotOfCell[cur]];
+    const r = S.region;
+    const li = cur - S.base;
+    const x = li % r.w;
+    const y = (li - x) / r.w;
     for (let d = 0; d < 4; d++) {
       let nx = x;
       let ny = y;
@@ -249,28 +294,46 @@ export function chainPush(B: Slot, inlet: number, v: number, flip: boolean): boo
       else if (d === 1) nx += sx;
       else if (d === 2) nx -= sx;
       else ny++;
-      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-      const j = ny * w + nx;
-      if (cpStamp[j] === cpGen || (mask !== null && mask[j] === 0)) continue;
-      cpStamp[j] = cpGen;
-      cpParent[j] = cur;
-      const g = cells[j];
-      if (g === 0) {
-        found = j;
+      let T = S;
+      let j: number;
+      if (nx >= 0 && ny >= 0 && nx < r.w && ny < r.h && (r.mask === null || r.mask[ny * r.w + nx] !== 0)) {
+        j = ny * r.w + nx;
+      } else {
+        if (!multi) continue;
+        const wx = S.ox + nx;
+        const wy = S.oy + ny;
+        if (wx < 0 || wy < 0 || wx >= W || wy >= sp.H) continue;
+        const t = sp.slotOf[wy * W + wx] - 1;
+        if (t < 0 || slots[t].group !== grp) continue;
+        T = slots[t];
+        j = sp.localOf[wy * W + wx];
+      }
+      const g = T.base + j;
+      if (cpStamp[g] === gen) continue;
+      cpStamp[g] = gen;
+      cpParent[g] = cur;
+      const val = T.region.cells[j];
+      if (val === 0) {
+        found = g;
         break;
       }
-      if ((g & COLOR_MASK) === c) cpQueue[tail++] = j;
+      if ((val & COLOR_MASK) === c) cpQueue[tail++] = g;
     }
   }
   if (found < 0) return false;
-  for (let k = found; k !== inlet; ) {
+  const F = slots[slotOfCell[found]];
+  for (let k = found; k !== start; ) {
     const p = cpParent[k];
-    cells[k] = cells[p];
+    const KS = slots[slotOfCell[k]];
+    const PS = slots[slotOfCell[p]];
+    KS.region.cells[k - KS.base] = PS.region.cells[p - PS.base];
+    KS.touched = true;
     k = p;
   }
-  cells[inlet] = v;
-  r.count++;
+  B.region.cells[inlet] = v;
+  F.region.count++;
   B.touched = true;
+  F.touched = true;
   return true;
 }
 
@@ -315,14 +378,13 @@ export function applyPull(state: GameState, sp: GameSpace, rng: Rng): void {
   const start = state.tick % np;
   for (let k = 0; k < np; k++) {
     const P = sp.pullers[(start + k) % np];
-    const br = P.box.region;
-    if (br.count >= br.capacity) continue;
+    if (groupCount(P.group) >= P.group.capacity) continue;
     if (P.idle) {
       let wake = false;
       for (const src of P.sources) if (!src.quiet || changed(src)) wake = true;
       if (!wake) continue;
     }
-    const id = P.box.id;
+    const id = P.key;
     let credit = Math.min(sp.credit[id] + P.rate, P.rate + 1);
     credit = pullBox(sp, P, R, credit, rng, state.tick);
     sp.credit[id] = credit;
@@ -330,7 +392,7 @@ export function applyPull(state: GameState, sp: GameSpace, rng: Rng): void {
 }
 
 function pullBox(sp: GameSpace, P: Puller, R: number, credit: number, rng: Rng, tick: number): number {
-  const c = P.box.color;
+  const c = P.color;
   const slots = sp.slots;
   const { bfsStamp, dist, qSlot, qLoc, qPair, stamp, pulled } = sp;
   const pairs = P.pairs;
@@ -346,8 +408,8 @@ function pullBox(sp: GameSpace, P: Puller, R: number, credit: number, rng: Rng, 
   const off = nextInt(rng, P.n);
   for (let t = 0; t < P.n; t++) {
     const p = (off + t) % P.n;
-    const s = pairs[3 * p];
-    const o = pairs[3 * p + 1];
+    const s = pairs[4 * p];
+    const o = pairs[4 * p + 1];
     const S = slots[s];
     const g = S.base + o;
     if (bfsStamp[g] === bg) continue;
@@ -389,8 +451,8 @@ function pullBox(sp: GameSpace, P: Puller, R: number, credit: number, rng: Rng, 
     }
   }
   // Move reached grains, nearest first.
-  const B = P.slot;
-  const br = B.region;
+  const grp = P.group;
+  let room = grp.capacity - groupCount(grp);
   for (let k = 0; k < qn; k++) {
     const S = slots[qSlot[k]];
     const r = S.region;
@@ -404,20 +466,22 @@ function pullBox(sp: GameSpace, P: Puller, R: number, credit: number, rng: Rng, 
     const d = dist[g];
     if (d === 0) {
       if (credit < 1) continue;
-      const inlet = pairs[3 * qPair[k] + 2];
+      const B = slots[pairs[4 * qPair[k] + 2]];
+      const br = B.region;
+      const inlet = pairs[4 * qPair[k] + 3];
       if (br.cells[inlet] === 0) {
         br.cells[inlet] = v;
         br.count++;
-      } else if (falling(br, inlet) || !chainPush(B, inlet, v, ((tick + k) & 1) === 0)) continue;
+        B.touched = true;
+      } else if (falling(br, inlet) || !chainPush(sp, B, inlet, v, ((tick + k) & 1) === 0)) continue;
       cells[i] = 0;
       r.count--;
       credit--;
       sp.crossings++;
       S.touched = true;
-      B.touched = true;
       stamp[B.base + inlet] = gen;
       pulled[B.base + inlet] = gen;
-      if (br.count >= br.capacity) break;
+      if (--room <= 0) break;
       continue;
     }
     // A grain whose CA move (fall, else slide) would bring it closer to the opening is left to

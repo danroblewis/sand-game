@@ -151,3 +151,47 @@ export function movableBoxes(state: GameState): Box[] {
     .filter((b) => b.state === 'active' && b.frozen === 0)
     .sort((a, b) => a.y - b.y || a.x - b.x || a.id - b.id);
 }
+
+/** Do two boxes have cells sharing a grid edge? */
+function touching(a: Box, b: Box): boolean {
+  for (const ca of a.cells) {
+    const ax = a.x + ca.x;
+    const ay = a.y + ca.y;
+    for (const cb of b.cells) {
+      const d = Math.abs(ax - b.x - cb.x) + Math.abs(ay - b.y - cb.y);
+      if (d === 1) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Connected groups (rule 6b): active, unfrozen boxes of the same color whose cells share a grid
+ * edge, transitively. A lone box is a group of one. Groups are ordered by their lowest box id, and
+ * boxes inside a group by id.
+ */
+export function connectedGroups(state: GameState): Box[][] {
+  const live = state.boxes.filter((b) => b.state === 'active' && b.frozen === 0);
+  const seen = new Set<Box>();
+  const groups: Box[][] = [];
+  for (const start of live) {
+    if (seen.has(start)) continue;
+    seen.add(start);
+    const g = [start];
+    for (let k = 0; k < g.length; k++)
+      for (const o of live)
+        if (!seen.has(o) && o.color === g[k].color && touching(g[k], o)) {
+          seen.add(o);
+          g.push(o);
+        }
+    g.sort((a, b) => a.id - b.id);
+    groups.push(g);
+  }
+  return groups;
+}
+
+/** The connected group containing box `boxId` (empty if the box is not active and unfrozen). */
+export function boxGroup(state: GameState, boxId: number): Box[] {
+  for (const g of connectedGroups(state)) if (g.some((b) => b.id === boxId)) return g;
+  return [];
+}

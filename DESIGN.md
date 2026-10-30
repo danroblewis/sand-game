@@ -93,11 +93,18 @@ box above another drains into it by gravity.
    `completedCount`, emit `boxCompleted`, decrement every frozen box's counter (emit `boxUnfrozen`
    when one hits 0). Leftover grains of that color stay in the sand boxes as debris and no longer
    matter. When all boxes are removed emit `won` and set `state.won = true` regardless of debris.
-6b. **Connected boxes complete together:** active boxes of the same color whose cells share an edge
-   form a connected group (they already exchange sand across the shared edge). A box completes only
-   when EVERY box in its group satisfies the completion test; then the whole group pops in the same
-   step. Separating a full box from its group lets it pop on its own at the next check. Frozen
-   boxes are not part of any group. Rendered as one merged outline so the rule is visible.
+6b. **Connected boxes are one container:** active, unfrozen boxes of the same color whose cells
+   share an edge form a group (4-connected between cells of different boxes; corners don't count).
+   The group behaves as ONE box for sand: it accepts grains while the group's total count is below
+   the group's total capacity; the chain push at an inlet searches for the nearest empty cell
+   through same-color grains across the shared edges of all members (so sand entering the piece
+   that touches the sand box flows on into its partners and the group fills like a single bigger
+   shape); gravity/slump already cross the shared edges; the pull rate is the group's
+   (base + per-cell over all member cells). Completion is also per group: it pops in one step when
+   `groupCount >= groupCapacity - COMPLETION_SLACK` (one slack per group). Separating a full piece
+   from its group makes it a group of one, which pops at the next check. Frozen boxes never group.
+   Groups are recomputed whenever dockings change (a box moved, popped, or thawed). Rendered as one
+   merged outline with a faint seam.
 7. **Debris dissolves:** after any completion, a color with grains still in sand boxes but no box
    of that color left on the board (frozen boxes count as remaining capacity) is finished: over
    `DISSOLVE_STEPS` (45) its remaining grains are removed at random, evenly, then one

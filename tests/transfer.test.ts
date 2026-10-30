@@ -413,3 +413,88 @@ describe('conduits and invariants', () => {
     for (let y = 0; y < sb.h - 1; y++) for (let x = 0; x < sb.w; x++) if (sb.cells[y * sb.w + x]) expect(sb.cells[(y + 1) * sb.w + x]).not.toBe(0);
   });
 });
+
+describe('connected same-color boxes are one container (rule 6b)', () => {
+  const hooks = () => createGame(level({
+    width: 7,
+    height: 10,
+    sandBoxes: [{ x: 5, y: 0, w: 2, h: 9, layers: [{ color: 4, amount: 2 }, { color: 3, amount: 12 }] }],
+    boxes: [
+      // the three yellow pieces of level "hooks", docked touching each other along the left face
+      { shape: 'J0', x: 3, y: 0, color: 3 },
+      { shape: 'L180', x: 3, y: 3, color: 3 },
+      { shape: 'J0', x: 3, y: 6, color: 3 },
+      { shape: '2x1', x: 0, y: 9, color: 4 },
+    ],
+  }), 7);
+
+  it('hooks repro: three docked yellow pieces drain the yellow and pop together', () => {
+    const s = hooks();
+    const totals = colorTotals(s);
+    let pops: number[] = [];
+    let popTick = -1;
+    for (let t = 0; t < 20000 && popTick < 0; t++) {
+      stepGame(s);
+      const done = s.events.filter((e) => e.type === 'boxCompleted').map((e) => (e as { boxId: number }).boxId);
+      s.events.length = 0;
+      if (done.length) {
+        pops = done;
+        popTick = t;
+      }
+    }
+    console.log(`hooks group: popped ${pops.join(',')} at step ${popTick}`);
+    expect(pops).toEqual([0, 1, 2]);
+    const yellowLeft = countColor(s.sandBoxes[0].region, 3);
+    expect(yellowLeft).toBeLessThanOrEqual(COMPLETION_SLACK); // one slack for the whole group
+    expect(countColor(s.sandBoxes[0].region, 4)).toBe(1152);
+    expect(colorTotals(s)).toEqual(totals); // nothing lost (dissolution starts next step)
+  });
+
+  it('two 1x1 side by side under a 2-wide red/blue sand box fill and pop as one', () => {
+    const s = createGame(level({
+      width: 7,
+      height: 9,
+      sandBoxes: [{ x: 0, y: 0, w: 2, h: 2, layers: [{ color: 1, amount: 2 }, { color: 6, amount: 2 }] }],
+      boxes: [{ shape: '1x1', x: 0, y: 2, color: 1 }, { shape: '1x1', x: 1, y: 2, color: 1 }],
+    }), 3);
+    let popped: number[] = [];
+    for (let t = 0; t < 3000 && !popped.length; t++) {
+      stepGame(s);
+      popped = s.events.filter((e) => e.type === 'boxCompleted').map((e) => (e as { boxId: number }).boxId);
+      s.events.length = 0;
+    }
+    expect(popped).toEqual([0, 1]);
+    expect(countColor(s.sandBoxes[0].region, 1)).toBeLessThanOrEqual(COMPLETION_SLACK);
+  });
+
+  it('a vertical pair beside a sand box: the bottom piece fills first by gravity, then the top via chain push', () => {
+    const s = createGame(level({
+      sandBoxes: [{ x: 1, y: 0, w: 1, h: 2, layers: [{ color: 1, amount: 2 }] }],
+      boxes: [
+        { shape: '1x1', x: 0, y: 1, color: 1 }, // top piece, beside the bottom cell of the sand box
+        { shape: '1x1', x: 0, y: 2, color: 1 }, // bottom piece, no sand box contact
+      ],
+    }), 4);
+    const [top, bottom] = s.boxes.map((b) => b.region);
+    let sawBottomAhead = false;
+    let t = 0;
+    for (; t < 3000 && s.boxes[0].state === 'active'; t++) {
+      stepGame(s);
+      if (top.count + bottom.count > 300 && top.count + bottom.count < 900 && bottom.count > top.count) sawBottomAhead = true;
+      expect(s.boxes[0].state).toBe(s.boxes[1].state); // never one without the other
+    }
+    expect(sawBottomAhead).toBe(true);
+    expect(s.boxes.map((b) => b.state)).toEqual(['removed', 'removed']);
+    expect(bottom.count).toBe(576); // filled completely through the shared edge
+    expect(top.count).toBeGreaterThanOrEqual(576 - COMPLETION_SLACK);
+  });
+
+  it('is deterministic', () => {
+    const run = () => {
+      const s = hooks();
+      for (let t = 0; t < 400; t++) stepGame(s);
+      return [s.boxes.map((b) => b.region.count), Array.from(s.sandBoxes[0].region.cells), s.rng.seed];
+    };
+    expect(run()).toEqual(run());
+  });
+});

@@ -8,7 +8,7 @@
 // with a fixed seed (SIM_SEED), so generateLevel(seed, difficulty) is deterministic.
 import type { Box, BoxDef, ColorId, GameState, LayerDef, LevelDef, SandBoxDef, ShapeName } from '../core/types';
 import { SHAPES, shapeBounds } from '../core/shapes';
-import { canPlace, createGame, gameSpace, stepGame, tryMoveBox } from '../core';
+import { canPlace, createGame, gameSpace, stepGame, tryMoveBox, groupCount } from '../core';
 import { validateLevel } from './validate';
 import { DEFAULT_MODEL, greedySolve, makeStack, solveMany, type ModelParams, type SolveResult } from './solver';
 
@@ -149,7 +149,7 @@ function simPath(state: GameState, box: Box, tx: number, ty: number): [number, n
 function simStatic(state: GameState): boolean {
   const sp = gameSpace(state);
   for (const s of sp.slots) if (!s.quiet) return false;
-  for (const p of sp.pullers) if (!p.idle && p.box.region.count < p.box.region.capacity) return false;
+  for (const p of sp.pullers) if (!p.idle && groupCount(p.group) < p.group.capacity) return false;
   return true;
 }
 
