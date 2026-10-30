@@ -19,6 +19,8 @@ export interface Progress {
   randomHero: boolean;
   /** Sound effects on (still silent until the first user gesture). */
   sound: boolean;
+  /** Vibration feedback on (where navigator.vibrate exists). */
+  haptics: boolean;
 }
 
 export type RandomMode = 'floating' | 'gravity' | 'mixed';
@@ -30,7 +32,7 @@ export function gravityFor(mode: RandomMode, seed: number): boolean {
 }
 
 export function loadProgress(): Progress {
-  const p: Progress = { completed: [], last: null, difficulty: null, randomSolved: {}, randomRecent: [], randomMode: 'floating', randomHero: false, sound: true };
+  const p: Progress = { completed: [], last: null, difficulty: null, randomSolved: {}, randomRecent: [], randomMode: 'floating', randomHero: false, sound: true, haptics: true };
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return p;
@@ -44,6 +46,7 @@ export function loadProgress(): Progress {
     if (typeof o.randomMode === 'string' && (RANDOM_MODES as readonly string[]).includes(o.randomMode)) p.randomMode = o.randomMode;
     if (typeof o.randomHero === 'boolean') p.randomHero = o.randomHero;
     if (typeof o.sound === 'boolean') p.sound = o.sound;
+    if (typeof o.haptics === 'boolean') p.haptics = o.haptics;
     if (Array.isArray(o.randomRecent)) p.randomRecent = o.randomRecent.filter((x) => typeof x === 'string').slice(-RECENT_MAX);
   } catch {
     /* storage unavailable or corrupt */

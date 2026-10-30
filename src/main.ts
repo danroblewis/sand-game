@@ -9,6 +9,7 @@ import { attachKeyboard, fixSelection } from './input/keyboard';
 import { Hud } from './ui/hud';
 import { HeroInput, heroApi } from './input/hero';
 import { Sfx, measureSound } from './audio/sfx';
+import { Haptics } from './audio/haptics';
 import type { Dir } from './core/types';
 import { gravityFor } from './ui/progress';
 import type { GenerateOptions } from './levels/generate';
@@ -37,6 +38,7 @@ const hud = new Hud(app, {
     loadRandom(d, seed, gravity ?? gravityFor(hud.randomMode, seed), hero ?? hud.randomHero),
   onUndo: () => undo(),
   onSound: (on) => sfx.setEnabled(on),
+  onHaptics: (on) => haptics.setEnabled(on),
   onHeroMove: (d) => heroKey(d),
 });
 hud.setLevels(LEVELS);
@@ -46,7 +48,9 @@ const renderer = new Renderer(hud.canvas);
 
 // ---------- Sound: never autoplays; the context is created/resumed on the first user gesture ----------
 const sfx = new Sfx(hud.progress.sound);
+const haptics = new Haptics(hud.progress.haptics);
 const unlockAudio = () => {
+  haptics.activate();
   sfx.unlock();
   if (sfx.state === 'running' || !sfx.isEnabled) {
     for (const t of ['pointerdown', 'keydown', 'touchend']) window.removeEventListener(t, unlockAudio, true);
@@ -266,14 +270,20 @@ function playSound(ev: GameState['events'][number]): void {
       flowThisFrame += ev.count;
       break;
     case 'boxCompleted':
+      // A group pops in one frame: one vibration pattern, chorded (staggered) sounds.
+      if (popsThisFrame === 0) haptics.pulse('pop');
       sfx.play('pop', { color: ev.color, delay: Math.min(popsThisFrame++, 5) * 0.025 });
       break;
     case 'boxUnfrozen':
       sfx.play('thaw');
+      haptics.pulse('thaw');
       break;
     case 'boxLanded':
+      sfx.play('land', { fell: ev.fell });
+      break;
     case 'heroLanded':
       sfx.play('land', { fell: ev.fell });
+      haptics.pulse('land', ev.fell);
       break;
     case 'heroMoved':
       if (ev.climbed) sfx.play('climb');
@@ -291,6 +301,7 @@ function playSound(ev: GameState['events'][number]): void {
     }
     case 'won':
       sfx.play('win', { delay: 0.2 });
+      haptics.pulse('win');
       break;
     case 'debrisDissolved':
       sfx.play('debris');
@@ -419,7 +430,9 @@ function frame(now: number): void {
     flowThisFrame = 0;
     popsThisFrame = 0;
     drainEvents(now);
-    sfx.update(dt / 1000, steps > 0 ? flowThisFrame / steps : 0);
+    const flowRate = steps > 0 ? flowThisFrame / steps : 0;
+    sfx.update(dt / 1000, flowRate);
+    haptics.update(dt / 1000, flowRate, now);
     releaseGoneHeldBox();
     fixSelection(state, view);
     renderer.render(state, view, now);
@@ -463,6 +476,7 @@ window.__game = {
   heroStep,
   undo,
   sfx,
+  haptics,
   measureSound,
   get undoDepth() {
     return undoStack.length;

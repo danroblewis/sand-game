@@ -20,6 +20,8 @@ export interface HudHandlers {
   onHeroMove?: (dir: Dir) => void;
   /** Sound on/off toggled. */
   onSound?: (on: boolean) => void;
+  /** Vibration on/off toggled. */
+  onHaptics?: (on: boolean) => void;
 }
 
 export type WinKind = 'next' | 'last' | 'random';
@@ -35,6 +37,8 @@ const ICONS = {
   hero: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="13" r="7"/><circle cx="14.5" cy="12" r="1" fill="currentColor"/><circle cx="17" cy="12" r="1" fill="currentColor"/></svg>',
   arrow: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>',
   soundOn: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M15.5 9a4 4 0 0 1 0 6"/><path d="M18 6.5a7.5 7.5 0 0 1 0 11"/></svg>',
+  hapticsOn: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="4" width="8" height="16" rx="2"/><path d="M4.5 9v6M19.5 9v6M2 10.5v3M22 10.5v3"/></svg>',
+  hapticsOff: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="4" width="8" height="16" rx="2"/><path d="M4 4l16 16"/></svg>',
   soundOff: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>',
   check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
   dice: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="9" cy="9" r="1.1" fill="currentColor"/><circle cx="15" cy="15" r="1.1" fill="currentColor"/><circle cx="15" cy="9" r="1.1" fill="currentColor"/><circle cx="9" cy="15" r="1.1" fill="currentColor"/></svg>',
@@ -102,6 +106,7 @@ export class Hud {
   private hint: HTMLElement;
   private movesEl: HTMLElement;
   private soundBtn!: HTMLButtonElement;
+  private hapticsBtn!: HTMLButtonElement;
   private prevBtn: HTMLButtonElement;
   private undoBtn!: HTMLButtonElement;
   /** Touch d-pad (hero levels). */
@@ -155,7 +160,7 @@ export class Hud {
     moves.append(el('span', 'moves-label', 'Moves'));
     this.movesEl = el('span', 'moves-value', '0');
     moves.append(this.movesEl);
-    this.soundBtn = el('button', 'btn-sound');
+    this.soundBtn = el('button', 'btn-sound btn-mute');
     this.soundBtn.type = 'button';
     this.soundBtn.addEventListener('click', () => {
       this.progress.sound = !this.progress.sound;
@@ -163,8 +168,20 @@ export class Hud {
       this.renderSound();
       handlers.onSound?.(this.progress.sound);
     });
+    this.hapticsBtn = el('button', 'btn-sound btn-haptics');
+    this.hapticsBtn.type = 'button';
+    this.hapticsBtn.addEventListener('click', () => {
+      this.progress.haptics = !this.progress.haptics;
+      saveProgress(this.progress);
+      this.renderSound();
+      handlers.onHaptics?.(this.progress.haptics);
+    });
+    // Only where the Vibration API exists (not iOS Safari).
+    const canVibrate = typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function';
     const right = el('div', 'hud-top-right');
-    right.append(moves, this.soundBtn);
+    right.append(moves);
+    if (canVibrate) right.append(this.hapticsBtn);
+    right.append(this.soundBtn);
     top.append(info, right);
     this.renderSound();
 
@@ -527,6 +544,12 @@ export class Hud {
     this.soundBtn.setAttribute('aria-label', on ? 'Sound on (tap to mute)' : 'Sound off (tap to unmute)');
     this.soundBtn.title = on ? 'Mute' : 'Unmute';
     this.soundBtn.classList.toggle('off', !on);
+    const h = this.progress.haptics;
+    this.hapticsBtn.innerHTML = h ? ICONS.hapticsOn : ICONS.hapticsOff;
+    this.hapticsBtn.setAttribute('aria-pressed', String(h));
+    this.hapticsBtn.setAttribute('aria-label', h ? 'Vibration on (tap to turn off)' : 'Vibration off (tap to turn on)');
+    this.hapticsBtn.title = h ? 'Vibration off' : 'Vibration on';
+    this.hapticsBtn.classList.toggle('off', !h);
   }
 
   /** Enable the Undo button when there is something to undo. */
