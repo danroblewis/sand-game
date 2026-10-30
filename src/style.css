@@ -158,6 +158,33 @@ canvas.board {
   display: none;
 }
 
+.gravity-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
+  padding: 2px 8px 2px 6px;
+  border-radius: 999px;
+  background: rgba(245, 200, 76, 0.14);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+
+.gravity-pill svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 /* ---------- buttons ---------- */
 .hud-bottom {
   display: grid;

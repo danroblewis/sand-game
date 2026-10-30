@@ -5,7 +5,7 @@
 import type { BoxDef, ConveyorDef, LevelDef, ShapeName } from '../src/core/types';
 import { describeState, replayLevel } from '../src/levels/replay';
 
-const R = 1, O = 2, Y = 3, G = 4, B = 6;
+const R = 1, O = 2, Y = 3, G = 4, B = 6, K = 9;
 type L = [number, number][];
 const lvl = (w: number, h: number, sb: [number, number, number, number, L][], boxes: BoxDef[], conveyors: ConveyorDef[] = []): LevelDef => ({
   id: 'lab', name: 'lab', width: w, height: h, conveyors,
@@ -169,3 +169,80 @@ run('AE2 one full red touching an empty red waits', lvl(7, 9, [[0, 0, 2, 1, [[R,
 // fed by the belt stalls at ~1.0 + 0.85 and never pops, so the group rule is not used in levels.
 run('AF buddy sequential on a belt', { ...lvl(7, 8, [[3, 0, 2, 2, [[R, 2], [B, 2]]]], [box('1x1', 0, 5, R), box('1x1', 2, 6, R)], [{ x: 0, y: 2, dir: 'right', length: 5 }]), walls: [{ x: 5, y: 2 }, { x: 3, y: 3 }, { x: 4, y: 3 }] }, ['box#0 -> (1,2)', 'box#1 -> (0,2)']);
 run('AG buddy pair on a belt (grouped)', { ...lvl(7, 8, [[3, 0, 2, 2, [[R, 2], [B, 2]]]], [box('1x1', 0, 5, R), box('1x1', 2, 6, R)], [{ x: 0, y: 2, dir: 'right', length: 5 }]), walls: [{ x: 5, y: 2 }, { x: 3, y: 3 }, { x: 4, y: 3 }] }, ['box#0 -> (1,2) &', 'box#1 -> (0,2)']);
+
+// ---- box gravity / Workshop (2026-10-30) ----
+const P = 8, W = 11;
+type SB = [number, number, number, number, L];
+const glvl = (w: number, h: number, sb: SB[], boxes: BoxDef[], walls: [number, number][] = []): LevelDef => ({
+  ...lvl(w, h, sb, boxes), boxGravity: true, walls: walls.map(([x, y]) => ({ x, y })),
+});
+const col = (x: number, y0: number, y1: number): [number, number][] => Array.from({ length: y1 - y0 + 1 }, (_, i) => [x, y0 + i]);
+function runSeeds(name: string, level: LevelDef, plan: string[], verbose = false) {
+  const only = process.argv[2];
+  if (only && !name.startsWith(only)) return;
+  for (const seed of [7, 1, 12345]) {
+    const r = replayLevel(level, plan, { seed, onDrag: verbose && seed === 7 ? (s, st, n) => console.log(`   ${s.padEnd(16)} +${(n / 60).toFixed(1)}s ${describeState(st)}`) : undefined });
+    console.log(`## ${name} seed=${seed}: ${r.won ? 'WON' : 'not won ' + r.why} ${(r.steps / 60).toFixed(1)}s longest ${(r.longestSettle / 60).toFixed(1)}s fills ${r.fills.join(' ')} ${r.won ? '' : describeState(r.state)}`);
+  }
+}
+// Results (2026-10-30, seeds 7/1/12345):
+// GA1/GA2/GA4/GH1/GG1: a tall 1-wide column with one box per layer in the shaft beside it fails in
+//   every order (each box sits by its own buried layer from the moment it lands, wedge-drains it and
+//   the column caves in; ~40% drains). Dropping the aligned stack at once (GG1, pin) fails the same way.
+// GD1: a box landing on a brim-full sand box skims 0.33 and stops.
+// GE1-3: a lone 1x1 under a 2-wide floating red/blue box fills, the second stalls at 0.6; one red
+//   beside the dock row grouped with the docked one stalls at 0.55 + 0.80; a 1x2 group under one
+//   column stalls too. Boxes can't land side by side in a dock row (the sand box is above it).
+// T1-T12: the one-row tray at a shaft foot is the reliable sequence (see the rules of thumb in
+//   src/levels/index.ts); T4/T5 (4-wide trays) stall, T6 (1x2 at the foot) wins but takes 44 s,
+//   T8 (yellow pair at the foot for a 2-cell band) wins, T8b (pair split by red) fails.
+// PL1 pillar catch, FR1 frozen plug, PP1 pin pull: all win.
+// GA. Shaft: column x=0 (layers bottom-first), 1-wide shaft x=1, wall x=2 (rows 1..h-1), boxes on
+// the floor to the right; each drag carries a box to the top of the shaft and lets it fall.
+const shaft = (h: number, sbY: number, layers: L, boxes: BoxDef[]) => glvl(8, h, [[0, sbY, 1, h - sbY, layers]], boxes, col(2, 1, h - 1));
+const floorBoxes = (h: number, specs: [ShapeName, number][]) => specs.map(([s, c], i) => box(s, 3 + i, h - (s === '1x2' ? 2 : s === '1x3' ? 3 : 1), c));
+const drops = (n: number) => Array.from({ length: n }, (_, i) => `box#${i} -> (1,0)`);
+runSeeds('GA1 1-wide shaft, 1-cell layers B R G Y, 1x1s', shaft(8, 3, [[B, 1], [R, 1], [G, 1], [Y, 1]], floorBoxes(8, [['1x1', B], ['1x1', R], ['1x1', G], ['1x1', Y]])), drops(4), true);
+runSeeds('GA2 same, wrong order (Y first)', shaft(8, 3, [[B, 1], [R, 1], [G, 1], [Y, 1]], floorBoxes(8, [['1x1', Y], ['1x1', R], ['1x1', G], ['1x1', B]])), drops(4));
+runSeeds('GA4 1-wide shaft, 5 layers 1x1', shaft(9, 2, [[B, 1], [R, 1], [G, 1], [Y, 1], [P, 1]], floorBoxes(9, [['1x1', B], ['1x1', R], ['1x1', G], ['1x1', Y], ['1x1', P]])), drops(5));
+// GD. A box dropped onto the top of a sand box (lands on it).
+runSeeds('GD1 land on top of brim-full', glvl(6, 8, [[2, 5, 2, 3, [[B, 4], [R, 2]]]], [box('2x1', 0, 7, R)]), ['box#0 -> (2,0)'], true);
+// GE. Floating sand box (rows 0-1) over a shelf; two red 1x1 land side by side under it.
+const ge = () => glvl(6, 8, [[2, 0, 2, 2, [[R, 2], [B, 2]]]], [box('1x1', 0, 7, R), box('1x1', 5, 7, R), box('2x1', 0, 6, B)], [[2, 3], [3, 3]]);
+runSeeds('GE1 1x1 alone then other', ge(), ['box#0 -> (2,2)', 'box#1 -> (3,2)'], true);
+runSeeds('GE2 group: one red beside the dock row on a shelf, the other docks', glvl(6, 8, [[2, 0, 2, 2, [[R, 2], [B, 2]]]], [box('1x1', 0, 7, R), box('1x1', 5, 7, R), box('2x1', 0, 6, B)], [[2, 3], [3, 3], [1, 3]]), ['box#0 -> (1,2)', 'box#1 -> (2,2)'], true);
+runSeeds('GE3 group: red under left col on a red under it (1x2 group)', glvl(6, 8, [[2, 0, 2, 2, [[R, 2], [B, 2]]]], [box('1x1', 0, 7, R), box('1x1', 5, 7, R), box('2x1', 0, 6, B)], [[2, 4], [3, 3]]), ['box#0 -> (2,3)', 'box#1 -> (2,2)'], true);
+// GG. Pin pull into the shaft: 1x1s rest in the shaft on a purple 2x1 pin at row 3 (its right
+// half lies on the wall); pulling the pin out drops the whole aligned stack at once.
+const ggWalls: [number, number][] = col(2, 4, 7);
+runSeeds('GG1 pin pull, aligned stack', glvl(8, 8, [[0, 4, 1, 4, [[B, 1], [R, 1], [G, 1], [Y, 1]]]],
+  [box('2x1', 1, 3, P), box('1x1', 1, 2, B), box('1x1', 1, 1, R), box('1x1', 1, 0, G), box('1x1', 5, 7, Y), box('2x1', 6, 7, P)], ggWalls),
+  ['box#4 -> (2,2)', 'box#0 -> (4,3)'], true);
+// GH. 1x2 boxes beside 2-cell layers (1-wide column), dropped one by one.
+const gh = () => glvl(8, 10, [[0, 2, 1, 8, [[B, 2], [R, 2], [G, 2], [Y, 2]]]], [box('1x2', 3, 8, B), box('1x2', 4, 8, R), box('1x2', 5, 8, G), box('1x2', 6, 8, Y)], col(2, 2, 9));
+runSeeds('GH1 1x2 shaft one by one', gh(), ['box#0 -> (1,0)', 'box#1 -> (1,0)', 'box#2 -> (1,0)', 'box#3 -> (1,0)'], true);
+// ---- verified pattern: one-row "tray" at a shaft's foot (core test, DESIGN.md) ----
+// T1. 3-band tray (3x1, bottom R, O, Y top) at the floor; shaft x=0 beside it; drop Y, O, R in.
+const tray = (bands: L, w: number, boxes: BoxDef[], walls: [number, number][] = [], h = 8) => glvl(8, h, [[1, h - 1, w, 1, bands]], boxes, walls);
+const fl = (cs: number[]) => cs.map((c, i) => box('1x1', 7 - i, 7, c));
+runSeeds('T1 tray 3 bands, stack Y O R', tray([[R, 1], [O, 1], [Y, 1]], 3, fl([Y, O, R])), ['box#0 -> (0,0)', 'box#1 -> (0,0)', 'box#2 -> (0,0)'], true);
+runSeeds('T2 tray 3 bands, stacked all at once with &', tray([[R, 1], [O, 1], [Y, 1]], 3, fl([Y, O, R])), ['box#0 -> (0,6) &', 'box#1 -> (0,5) &', 'box#2 -> (0,4)']);
+runSeeds('T3 tray 3 bands, wrong order R at bottom', tray([[R, 1], [O, 1], [Y, 1]], 3, fl([R, O, Y])), ['box#0 -> (0,0)', 'box#1 -> (0,0)', 'box#2 -> (0,0)']);
+runSeeds('T4 tray 4 bands 4x1', tray([[R, 1], [O, 1], [Y, 1], [G, 1]], 4, fl([G, Y, O, R])), ['box#0 -> (0,6) &', 'box#1 -> (0,5) &', 'box#2 -> (0,4) &', 'box#3 -> (0,3)']);
+runSeeds('T5 tray 2 bands of 2 (4x1), 1x1 pairs', tray([[R, 2], [Y, 2]], 4, fl([Y, Y, R, R])), ['box#0 -> (0,6) &', 'box#1 -> (0,5) &', 'box#2 -> (0,4) &', 'box#3 -> (0,3)']);
+runSeeds('T6 tray 3 bands, 1x2 boxes? (1x2 Y, 1x1 O, 1x1 R)', tray([[R, 1], [O, 1], [Y, 2]], 4, [box('1x2', 7, 6, Y), box('1x1', 6, 7, O), box('1x1', 5, 7, R)]), ['box#0 -> (0,5) &', 'box#1 -> (0,4) &', 'box#2 -> (0,3)'], true);
+// T7. Floating tray: tray on a wall shelf at row 4 with the shaft floor (wall) beside it.
+runSeeds('T7 raised tray with shelf floor', glvl(8, 8, [[1, 4, 3, 1, [[R, 1], [O, 1], [Y, 1]]]], fl([Y, O, R]), [[0, 5], [1, 5], [2, 5], [3, 5]]), ['box#0 -> (0,0)', 'box#1 -> (0,0)', 'box#2 -> (0,0)']);
+// FR. Frozen plug at the foot of a tray shaft (frozen 1): the stack waits until something pops.
+runSeeds('FR1 frozen Y plug, stack O R above, pop the white first', glvl(8, 8, [[1, 7, 3, 1, [[R, 1], [O, 1], [Y, 1]]], [5, 0, 1, 1, [[W, 1]]]], [box('1x1', 0, 7, Y, 1), box('1x1', 7, 7, O), box('1x1', 6, 7, R), box('1x1', 4, 7, W)], [[5, 2]]), ['box#1 -> (0,0)', 'box#2 -> (0,0)', 'box#3 -> (5,1)'], true);
+// PP. Pin pull: a pre-built stack rests on a 2x1 pin bridging the shaft top and a wall; pull it.
+runSeeds('PP1 pin over tray shaft', glvl(8, 8, [[1, 7, 3, 1, [[R, 1], [O, 1], [Y, 1]]]], [box('2x1', 0, 3, P), box('1x1', 0, 2, Y), box('1x1', 0, 1, O), box('1x1', 0, 0, R), box('2x1', 5, 7, P)], [...col(1, 4, 6)]), ['box#0 -> (4,3)'], true);
+runSeeds('T8 3x1 tray [R1, Y2], Y Y pair at the foot (group) then R', tray([[R, 1], [Y, 2]], 3, fl([Y, Y, R])), ['box#0 -> (0,6) &', 'box#1 -> (0,5) &', 'box#2 -> (0,4)'], true);
+runSeeds('T8b 3x1 tray [R1, Y2], 1x1 Y, 1x1 R, 1x1 Y (no group)', tray([[R, 1], [Y, 2]], 3, fl([Y, R, Y])), ['box#0 -> (0,6) &', 'box#1 -> (0,5) &', 'box#2 -> (0,4)']);
+runSeeds('T10 2x1 tray [R1, Y1]', tray([[R, 1], [Y, 1]], 2, fl([Y, R])), ['box#0 -> (0,6) &', 'box#1 -> (0,5)']);
+runSeeds('T11 1x1 tray [R1]', tray([[R, 1]], 1, fl([R])), ['box#0 -> (0,0)']);
+runSeeds('T12 tray right of shaft (shaft x=4, tray x=1..3)', glvl(8, 8, [[1, 7, 3, 1, [[R, 1], [O, 1], [Y, 1]]]], [box('1x1', 7, 7, Y), box('1x1', 6, 7, O), box('1x1', 5, 7, R)], [[5, 6], [5, 5]]), ['box#0 -> (4,0)', 'box#1 -> (4,0)', 'box#2 -> (4,0)']);
+// PL. Pillar: floating 2x2 sand box (rows 3-4, blue bottom, red top) with nothing under it: a white
+// and a purple 2x1 stacked on the floor hold the catcher in the dock row.
+const plL = () => glvl(7, 8, [[2, 3, 2, 2, [[B, 2], [R, 2]]], [6, 0, 1, 2, [[W, 2]]], [0, 0, 1, 2, [[P, 2]]]], [box('2x1', 0, 7, W), box('2x1', 0, 6, P), box('2x1', 5, 7, R), box('2x1', 5, 6, B)]);
+runSeeds('PL1 pillar then catchers', plL(), ['box#0 -> (2,7)', 'box#1 -> (2,6)', 'box#3 -> (2,5)', 'box#2 -> (2,5)'], true);

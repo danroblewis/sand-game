@@ -113,6 +113,24 @@ export function validateLevel(level: LevelDef): string[] {
     claim(w.x, w.y, label);
   });
 
+  // Box gravity: every box must start resting (some cell right below one of its cells is the floor,
+  // a wall, a sand box, or another box) so a level never opens with a cascade.
+  if (level.boxGravity) {
+    level.boxes.forEach((b, i) => {
+      const label = `box#${i}(${b.shape}@${b.x},${b.y})`;
+      const own = `box#${i}(`;
+      const cells = boxDefCells(b);
+      const rests = cells.some((c) => {
+        const y = c.y + 1;
+        if (y >= H) return true;
+        if (c.x < 0 || c.x >= W || y < 0) return false;
+        const o = owner[y * W + c.x];
+        return o !== '' && !o.startsWith(own);
+      });
+      if (!rests) p.push(`${tag}: ${label} does not start resting (box gravity is on)`);
+    });
+  }
+
   // Conveyors: a strip of `length` cells from (x, y) in `dir`. The whole strip must be on the board
   // and must not overlap sand boxes or other conveyors; boxes may start on a belt (belt cells are
   // walkable), and whatever lies beyond the strip end is fine.

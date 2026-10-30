@@ -97,6 +97,9 @@ export interface LevelDef {
   conveyors?: ConveyorDef[];
   /** Fixed wall cells: obstacles like sand boxes, but holding no sand. */
   walls?: Vec[];
+  /** When true, boxes fall (one cell per BOX_FALL_INTERVAL steps) until they rest on the floor, a
+   *  wall, a sand box, or another box. Default false. */
+  boxGravity?: boolean;
   /** Optional one-line hint shown in the HUD. */
   hint?: string;
   /** Optional authored solution as drag steps "box#i -> (x,y)" (i = index into `boxes`). Levels are
@@ -139,6 +142,8 @@ export interface Box {
   frozen: number;
   /** Direction a conveyor carried this box in on its last belt step, or null (for rendering). */
   pushDir: Dir | null;
+  /** Cells fallen so far in the current fall under box gravity (0 when resting). */
+  falling: number;
   /** Fine grid region sized bw*N by bh*N with a mask built from `cells`. */
   region: SandRegion;
   state: BoxState;
@@ -168,6 +173,7 @@ export interface ConveyorState {
 export type GameEvent =
   | { type: 'boxCompleted'; boxId: number; x: number; y: number; cells: Vec[]; color: ColorId }
   | { type: 'conveyed'; conveyorId: number; boxIds: number[]; dir: Dir }
+  | { type: 'boxLanded'; boxId: number; fell: number }
   | { type: 'boxUnfrozen'; boxId: number }
   | { type: 'boxMoved'; boxId: number; x: number; y: number }
   | { type: 'transfer'; count: number }
@@ -184,6 +190,8 @@ export interface GameState {
   conveyors: ConveyorState[];
   /** Wall cells (copied from the level). Obstacles for movement; nothing else. */
   walls: Vec[];
+  /** Box gravity on/off for this level (see LevelDef.boxGravity). */
+  boxGravity: boolean;
   /** Box currently held by the pointer (set by the input layer); conveyors leave it alone. */
   heldBoxId: number | null;
   /** Boxes completed so far (drives frozen counters). */

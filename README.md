@@ -21,10 +21,10 @@ npm run dev      # http://localhost:5173
   their edge (three grains). Clear a layer to expose the one under it.
 - A box pops when it is within a tenth of a cell of full. Leftover specks of a finished color
   dissolve.
-- Conveyor belts crawl slowly, carrying boxes to a sand box and queueing them against it. When the
-  front box pops, the queue advances. Anything parked in the belt's path blocks the riders until you
-  move it. A box you are holding stays put.
-- Walls are fixed. Some sand boxes can only be reached by a belt lane.
+- Walls are fixed. Some sand boxes can only be reached through a lane.
+- Chapter 2, Workshop, turns on gravity for boxes: they fall when you let go and stack. Only the
+  box at the foot of a shaft touches the sand tray beside it, so the order you stack is the order
+  the colors drain. Pull a support out and everything above it drops.
 - Touching boxes of the same color count as one container: they pop together once all are full.
   Pull a full one away from its partners and it pops on its own.
 

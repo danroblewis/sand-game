@@ -23,6 +23,7 @@ const ICONS = {
   restart:
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4v5h5"/></svg>',
   grid: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg>',
+  down: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v14"/><path d="M6 12l6 6 6-6"/></svg>',
   check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
   dice: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="9" cy="9" r="1.1" fill="currentColor"/><circle cx="15" cy="15" r="1.1" fill="currentColor"/><circle cx="15" cy="9" r="1.1" fill="currentColor"/><circle cx="9" cy="15" r="1.1" fill="currentColor"/></svg>',
   sun: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg>',
@@ -334,8 +335,15 @@ export class Hud {
   }
 
   private common(level: LevelDef): void {
-    this.hint.textContent = level.hint ?? '';
-    this.hint.classList.toggle('empty', !level.hint);
+    // Gravity levels: a small badge leads the hint line so the player knows boxes fall here.
+    this.hint.textContent = '';
+    if (level.boxGravity) {
+      const pill = el('span', 'gravity-pill', `${ICONS.down}<span>Gravity</span>`);
+      pill.title = 'Boxes fall in this level';
+      this.hint.append(pill);
+    }
+    if (level.hint) this.hint.append(document.createTextNode(level.hint));
+    this.hint.classList.toggle('empty', !level.hint && !level.boxGravity);
     this.lastMoves = -1;
     this.setMoves(0);
     this.hideWin();

@@ -18,9 +18,19 @@ const base = (): LevelDef => ({
 });
 
 describe('LEVELS', () => {
-  it('has 14-18 levels', () => {
+  it('has 14-30 levels', () => {
     expect(LEVELS.length).toBeGreaterThanOrEqual(14);
-    expect(LEVELS.length).toBeLessThanOrEqual(18);
+    expect(LEVELS.length).toBeLessThanOrEqual(30);
+  });
+
+  it('chapter 1 (levels 1-18) has no box gravity; chapter 2 (Workshop) is all box gravity', () => {
+    LEVELS.slice(0, 18).forEach((l) => expect(l.boxGravity ?? false, l.id).toBe(false));
+    const ch2 = LEVELS.slice(18);
+    expect(ch2.length).toBeGreaterThanOrEqual(8);
+    ch2.forEach((l) => {
+      expect(l.boxGravity, l.id).toBe(true);
+      expect(l.conveyors ?? [], `${l.id}: no belts in gravity levels`).toEqual([]);
+    });
   });
 
   it('has unique ids and names', () => {
@@ -64,10 +74,11 @@ describe('LEVELS', () => {
           expect(p!.box).toBeLessThan(level.boxes.length);
         }
         // every box is dragged at least once unless it is completed in place (frozen boxes that
-        // thaw already docked)
+        // thaw already docked) or, with box gravity, dropped into place when its support is pulled
+        // (a closet over a shaft); the physics replay proves those complete.
         const dragged = new Set(level.solution!.map((st) => parseStep(st)!.box));
         level.boxes.forEach((b, i) => {
-          if (!dragged.has(i)) expect(b.frozen ?? 0, `box#${i} never moves`).toBeGreaterThan(0);
+          if (!dragged.has(i) && !level.boxGravity) expect(b.frozen ?? 0, `box#${i} never moves`).toBeGreaterThan(0);
         });
       });
     });
@@ -213,6 +224,30 @@ describe('validateLevel', () => {
     l.walls = [{ x: 0, y: 5 }];
     l.conveyors = [{ x: 0, y: 6, dir: 'up', length: 2 }];
     expect(validateLevel(l).join('\n')).toMatch(/conveyor#0.*overlaps wall#0/);
+  });
+
+  it('box gravity: every box must start resting', () => {
+    const ok: LevelDef = {
+      ...base(),
+      boxGravity: true,
+      walls: [{ x: 4, y: 3 }],
+      boxes: [
+        { shape: '1x1', x: 0, y: 7, color: 1 }, // on the floor
+        { shape: '2x1', x: 0, y: 6, color: 6 }, // half on the red box: resting
+      ],
+    };
+    expect(validateLevel(ok)).toEqual([]);
+    const onWall: LevelDef = { ...ok, boxes: [{ shape: '1x1', x: 0, y: 7, color: 1 }, { shape: '2x1', x: 4, y: 2, color: 6 }] };
+    expect(validateLevel(onWall)).toEqual([]);
+    const underSandBox: LevelDef = { ...ok, boxes: [{ shape: '1x1', x: 0, y: 7, color: 1 }, { shape: '2x1', x: 2, y: 0, color: 6 }] };
+    expect(validateLevel(underSandBox)).toEqual([]); // resting on the sand box's top
+    const floating: LevelDef = { ...ok, boxes: [{ shape: '1x1', x: 0, y: 7, color: 1 }, { shape: '2x1', x: 3, y: 5, color: 6 }] };
+    expect(validateLevel(floating).join('\n')).toMatch(/box#1.*does not start resting/);
+    // a tall box resting on nothing but itself is still floating
+    const tall: LevelDef = { ...ok, boxes: [{ shape: '1x1', x: 0, y: 4, color: 1 }, { shape: '2x1', x: 0, y: 7, color: 6 }] };
+    expect(validateLevel(tall).join('\n')).toMatch(/box#0.*does not start resting/);
+    // without box gravity floating boxes are fine
+    expect(validateLevel({ ...floating, boxGravity: false })).toEqual([]);
   });
 
   it('rejects duplicate level ids', () => {

@@ -1,7 +1,7 @@
 // Replays a drag plan ("box#i -> (x,y)") through the real simulation. This is the proof that a
 // level is winnable: the abstract solver is only a heuristic now that sand obeys gravity.
 import type { Box, GameState, LevelDef } from '../core/types';
-import { canPlace, createGame, regionVersion, stepGame, tryMoveBox } from '../core';
+import { canPlace, createGame, fallPlan, regionVersion, stepGame, tryMoveBox } from '../core';
 import { STEPS_PER_SECOND } from '../core/constants';
 
 export interface ReplayOptions {
@@ -98,7 +98,9 @@ export function settle(state: GameState, quiet = 45, max = 3600): number {
     stepGame(state);
     steps++;
     const v = versionSum(state);
-    if (v === last && !beltBusy(state)) {
+    // a box still falling (box gravity) is activity too: a drag that drops a stack is not settled
+    // until everything has landed
+    if (v === last && !beltBusy(state) && fallPlan(state).size === 0) {
       if (++still >= quiet) break;
     } else {
       still = 0;

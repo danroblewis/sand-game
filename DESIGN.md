@@ -239,6 +239,32 @@ immovable. Purpose: fence a sand box off so the only way to reach it is a convey
 "gauntlet" level: a multi-layer sand box behind walls, fed by a belt, so the player must queue the
 boxes in layer order while shuffling the rest of the board).
 
+## Box gravity (per level)
+
+`LevelDef.boxGravity: true` turns on gravity for boxes in that level (Chapter 2 "Workshop" uses it;
+Chapter 1 does not). Rules:
+- Every `BOX_FALL_INTERVAL` (4) steps, each active box (frozen ones too) that is not the held box
+  and whose cells can all move down one cell (`canPlace`) falls one cell. Boxes are processed
+  bottom-up so a stack falls together; a box resting on the held box does not fall. `box.falling`
+  counts cells fallen in the current fall; when a falling box stops, emit `boxLanded {boxId, fell}`
+  and reset it. Falls don't count as `moves`; `shakeBox` on landing only.
+- The player may move a box in any direction (dragging carries it; keyboard moves it); on release
+  (or after a keyboard move) it falls if unsupported. Pulling a support out from under a stack drops
+  the stack. Dockings/space are invalidated when anything moves (existing rule).
+- Design purpose: stage a sequence without a timer. What works (measured): a **shaft** whose floor
+  is a shelf beside a low, wide sand box (one grid row tall, several thin color bands) so that only
+  the BOTTOM box of a stack touches the sand. The bottom box drains the top band at its height,
+  pops, the stack drops one cell, and the next box lands at the contact point. Stack order = drain
+  order (top band's color at the BOTTOM of the stack). About 8 s per box. What does NOT work: a
+  tall sand box with one box per layer height; all boxes touch their layers at once and buried
+  layers only wedge-drain. Popping the top box of a stack drops nothing, so the contact point must
+  be at the bottom of a stack. Catching from below still works for sand boxes floating above a
+  shelf (a box resting on a wall under the sand box). Belts/springs are not used in gravity levels.
+- Rendering: falling boxes glide (same approach as belt riders: predict the fall and offset by
+  phase, or lerp); a small squash/dust effect on `boxLanded` scaled by `fell`.
+- Validator: for gravity levels, every box must start resting (the cell(s) below each box are the
+  floor, a wall, a sand box, or another box) so levels don't start with a cascade.
+
 ## Non-goals (v1)
 
 No timer, no stars, no monetisation, no accounts, no level editor, no sound (maybe later).

@@ -69,3 +69,6 @@ export const DISSOLVE_STEPS = 45;
 /** Conveyors move the boxes riding them one cell every this many steps (100 ≈ 1.7 s per cell: a
  *  slow burn the player waits on and can block or clear). */
 export const CONVEYOR_INTERVAL = 100;
+
+/** Box gravity (per level): unsupported boxes fall one cell every this many steps. */
+export const BOX_FALL_INTERVAL = 4;

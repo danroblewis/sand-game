@@ -38,3 +38,4 @@ export { gameSpace, invalidateSpace, applyPull, chainPush } from './transfer';
 export type { GameSpace, Puller } from './transfer';
 export { createGame, stepGame, checkCompletions, boxComplete, dissolvedGrains } from './game';
 export { applyConveyors, buildConveyor, conveyorAtCell, conveyorPlan, riderNextFree, DIR_VEC } from './conveyors';
+export { applyBoxGravity, boxSupported, fallPlan } from './gravity';

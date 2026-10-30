@@ -4,6 +4,23 @@ import { SHADE_COUNT } from '../core/types';
 import { SHAPES } from '../core/shapes';
 import { regionVersion } from '../core/sand';
 import { CONVEYOR_INTERVAL, conveyorPlan } from '../core';
+import * as Core from '../core';
+
+// Box gravity exports may not exist yet in the core: read them through the namespace, guarded.
+const coreAny = Core as unknown as Record<string, unknown>;
+function fallPlanOf(state: GameState): Set<number> | null {
+  const fp = coreAny.fallPlan;
+  if (!state.boxGravity || typeof fp !== 'function') return null;
+  try {
+    return (fp as (s: GameState) => Set<number>)(state);
+  } catch {
+    return null;
+  }
+}
+function boxFallInterval(): number {
+  const v = coreAny.BOX_FALL_INTERVAL;
+  return typeof v === 'number' && v > 0 ? v : 4;
+}
 import {
   BOARD_BG,
   GRID_LINE,
@@ -43,6 +60,10 @@ export type Effect =
       sparks: Spark[];
     }
   | { kind: 'thaw'; t0: number; dur: number; boxId: number }
+  /** Landing squash for a box that fell `fell` cells. */
+  | { kind: 'land'; t0: number; dur: number; boxId: number; amp: number }
+  /** Dust puff at the bottom edge of a landed box. */
+  | { kind: 'dust'; t0: number; dur: number; sparks: Spark[] }
   /** Sparkle over a sand box whose leftover grains of `color` just dissolved. */
   | { kind: 'debris'; t0: number; dur: number; color: ColorId; x: number; y: number; w: number; h: number; sparks: Spark[] };
 
@@ -240,6 +261,8 @@ interface RenderPos {
   tau: number;
   /** True once a gliding rider is locked onto its exact belt position (drawn directly, no lerp). */
   locked: boolean;
+  /** Catch-up speed allowance (cells/s) carried over from a glide that just ended (0 = none). */
+  carry: number;
 }
 
 const LERP_TAU = 0.08; // seconds
@@ -400,6 +423,10 @@ export class Renderer {
     const phase = Math.min(1, basePhase + frac);
     const beltProgress = Math.floor(Math.max(0, state.tick - 1) / CONVEYOR_INTERVAL) + phase; // in cells
     const plan = convs.length ? conveyorPlan(state) : EMPTY_PLAN;
+    // Box gravity: boxes about to fall glide down by the fall phase (same scheme as belt riders).
+    const falls = fallPlanOf(state);
+    const fallI = boxFallInterval();
+    const fallPhase = Math.min(1, ((Math.max(0, state.tick - 1) % fallI) + Math.min(1, Math.max(0, view.stepFrac || 0))) / fallI);
     this.drawWalls();
     for (const cv of convs) this.drawConveyor(cv, now, beltProgress);
 
@@ -409,7 +436,7 @@ export class Renderer {
     for (const b of state.boxes) {
       let p = this.positions.get(b.id);
       if (!p) {
-        p = { rx: b.x, ry: b.y, tau: LERP_TAU, locked: false };
+        p = { rx: b.x, ry: b.y, tau: LERP_TAU, locked: false, carry: 0 };
         this.positions.set(b.id, p);
         continue;
       }
@@ -418,15 +445,21 @@ export class Renderer {
       let tx = b.x;
       let ty = b.y;
       const rideDir = held || b.frozen > 0 ? undefined : plan.get(b.id);
-      if (rideDir) {
-        // Gliding rider: grid position + belt phase. Continuous across the belt step because the
+      const falling = !held && falls !== null && falls.has(b.id);
+      if (rideDir || falling) {
+        // Gliding rider / faller: grid position + phase. Continuous across the step because the
         // grid position advances exactly when the phase wraps.
-        const [dx, dy] = DIR_VEC[rideDir];
-        tx += dx * phase;
-        ty += dy * phase;
+        if (falling) {
+          ty += fallPhase;
+        } else if (rideDir) {
+          const [dx, dy] = DIR_VEC[rideDir];
+          tx += dx * phase;
+          ty += dy * phase;
+        }
         if (p.locked) {
           p.rx = tx;
           p.ry = ty;
+          p.carry = 1.6 * (60 / (falling ? fallI : CONVEYOR_INTERVAL));
           continue;
         }
       } else {
@@ -442,13 +475,23 @@ export class Renderer {
         }
       }
       const k = dt > 0 ? 1 - Math.exp(-dt / p.tau) : 1;
-      p.rx += (tx - p.rx) * k;
-      p.ry += (ty - p.ry) * k;
+      // Riders/fallers ease on, but may catch up at 1.6x their own speed so a fast fall locks on
+      // within a few frames instead of trailing it (no snap: the per-frame move stays bounded).
+      // A glide that just ended (landed / blocked) finishes at its own speed, not with a slow ease.
+      const chase = (rideDir ? 1.6 * (60 / CONVEYOR_INTERVAL) : falling ? 1.6 * (60 / fallI) : p.carry) * dt;
+      const ease = (cur: number, tgt: number) => {
+        const d = tgt - cur;
+        const e = d * k;
+        return Math.abs(d) <= chase ? tgt : Math.abs(e) >= chase ? cur + e : cur + Math.sign(d) * chase;
+      };
+      p.rx = ease(p.rx, tx);
+      p.ry = ease(p.ry, ty);
       if (Math.abs(tx - p.rx) < 0.002) p.rx = tx;
       if (Math.abs(ty - p.ry) < 0.002) p.ry = ty;
       if (p.rx === tx && p.ry === ty) {
         p.tau = LERP_TAU;
-        if (rideDir) p.locked = true; // eased onto the belt: from now on follow it exactly
+        if (!rideDir && !falling) p.carry = 0;
+        if (rideDir || falling) p.locked = true; // eased on: from now on follow it exactly
       }
     }
 
@@ -506,6 +549,35 @@ export class Renderer {
           });
         }
         out.push({ kind: 'debris', t0: now, dur: DEBRIS_MS, color: ev.color, x: sb.x, y: sb.y, w: sb.w, h: sb.h, sparks });
+      }
+      return out;
+    }
+    if (ev.type === 'boxLanded') {
+      const box = state.boxes.find((b) => b.id === ev.boxId);
+      const fell = Math.max(1, ev.fell);
+      const k = Math.min(1, fell / 6); // 1 cell subtle .. 6+ cells a thump
+      const out: Effect[] = [{ kind: 'land', t0: now, dur: 110 + 60 * k, boxId: ev.boxId, amp: 0.035 + 0.075 * k }];
+      if (box) {
+        const sparks: Spark[] = [];
+        const own = new Set(box.cells.map((c) => `${c.x},${c.y}`));
+        const bottoms = box.cells.filter((c) => !own.has(`${c.x},${c.y + 1}`));
+        const per = Math.round(2 + 5 * k);
+        for (const c of bottoms) {
+          for (let i = 0; i < per; i++) {
+            const side = Math.random() < 0.5 ? -1 : 1;
+            const sh = Math.floor(Math.random() * SHADE_COUNT);
+            const [r, g, bl] = grainRGBA(11, sh);
+            sparks.push({
+              x: box.x + c.x + 0.5 + side * (0.25 + Math.random() * 0.25),
+              y: box.y + c.y + 0.97,
+              vx: side * (0.6 + Math.random() * 1.6) * (0.5 + k),
+              vy: -(0.2 + Math.random() * 0.9) * (0.5 + k),
+              size: 0.04 + Math.random() * 0.05,
+              rgb: `rgb(${r},${g},${bl})`,
+            });
+          }
+        }
+        out.push({ kind: 'dust', t0: now, dur: 280 + 220 * k, sparks });
       }
       return out;
     }
@@ -798,7 +870,36 @@ export class Renderer {
     return this.frost;
   }
 
+  /** Landing squash factor (1 = none) for a box, from its `land` effect. */
+  private squashOf(id: number, view: View, now: number): number {
+    for (const e of view.effects) {
+      if (e.kind !== 'land' || e.boxId !== id) continue;
+      const t = (now - e.t0) / e.dur;
+      if (t >= 0 && t <= 1) return 1 - e.amp * Math.sin(Math.PI * t);
+    }
+    return 1;
+  }
+
   private drawBox(b: Box, view: View, now: number): void {
+    const sq = this.squashOf(b.id, view, now);
+    if (sq !== 1) {
+      // Squash about the bottom edge, with a matching slight widening.
+      const pos = this.positions.get(b.id);
+      const cs = this.cellSize;
+      const cx = this.originX + ((pos ? pos.rx : b.x) + b.bw / 2) * cs;
+      const by = this.originY + ((pos ? pos.ry : b.y) + b.bh) * cs;
+      this.ctx.save();
+      this.ctx.translate(cx, by);
+      this.ctx.scale(1 + (1 - sq) * 0.6, sq);
+      this.ctx.translate(-cx, -by);
+      this.drawBoxBody(b, view, now);
+      this.ctx.restore();
+      return;
+    }
+    this.drawBoxBody(b, view, now);
+  }
+
+  private drawBoxBody(b: Box, view: View, now: number): void {
     const ctx = this.ctx;
     const cs = this.cellSize;
     const pos = this.positions.get(b.id);
@@ -932,7 +1033,7 @@ export class Renderer {
   private visualGroups(state: GameState, view: View): Box[][] {
     const cand: Box[] = [];
     for (const b of state.boxes) {
-      if (b.state === 'active' && b.frozen === 0 && b.id !== view.dragBoxId) cand.push(b);
+      if (b.state === 'active' && b.frozen === 0 && b.id !== view.dragBoxId && !view.effects.some((e) => e.kind === 'land' && e.boxId === b.id)) cand.push(b);
     }
     if (cand.length < 2) return [];
     const owner = new Map<string, number>(); // "x,y" -> index in cand
@@ -1093,6 +1194,22 @@ export class Renderer {
       effects[w++] = e;
       if (e.kind === 'debris') {
         this.drawDebris(e, age);
+        continue;
+      }
+      if (e.kind === 'dust') {
+        const t = age / e.dur;
+        const ts = age / 1000;
+        const drag = 1 - Math.exp(-ts * 6); // particles decelerate quickly
+        ctx.save();
+        for (const sp of e.sparks) {
+          ctx.globalAlpha = Math.max(0, 0.75 * (1 - t));
+          const sx = sp.x + (sp.vx / 6) * drag;
+          const sy = sp.y + (sp.vy / 6) * drag + 0.6 * ts * ts;
+          const size = Math.max(this.dpr * 1.5, sp.size * cs * (1 + t));
+          ctx.fillStyle = sp.rgb;
+          ctx.fillRect(this.originX + sx * cs - size / 2, this.originY + sy * cs - size / 2, size, size);
+        }
+        ctx.restore();
         continue;
       }
       if (e.kind !== 'pop') continue;

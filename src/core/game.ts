@@ -7,6 +7,7 @@ import { beginStep, createRegion, endStep, fillLayers, sweepSpace } from './sand
 import { applyPull, gameSpace } from './transfer';
 import { applyConveyors, buildConveyor } from './conveyors';
 import { connectedGroups } from './grid';
+import { applyBoxGravity } from './gravity';
 import { COMPLETION_SLACK, DISSOLVE_STEPS } from './constants';
 import { nextFloat } from './rng';
 import { touchRegion } from './sand';
@@ -40,6 +41,7 @@ export function createGame(level: LevelDef, seed = 1): GameState {
       region: createRegion(fw, bh * N, mask),
       state: 'active',
       pushDir: null,
+      falling: 0,
     };
   });
   return {
@@ -50,6 +52,7 @@ export function createGame(level: LevelDef, seed = 1): GameState {
     boxes,
     conveyors: (level.conveyors ?? []).map(buildConveyor),
     heldBoxId: null,
+    boxGravity: level.boxGravity ?? false,
     walls: (level.walls ?? []).map((w) => ({ x: w.x, y: w.y })),
     completedCount: 0,
     moves: 0,
@@ -74,6 +77,7 @@ export function stepGame(state: GameState): void {
   endStep(sp);
   if (sp.crossings > 0) state.events.push({ type: 'transfer', count: sp.crossings });
   applyConveyors(state); // box moves change the dockings: the space rebuilds next step
+  applyBoxGravity(state);
   checkCompletions(state);
   state.tick++;
 }

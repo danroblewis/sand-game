@@ -26,6 +26,15 @@ const sb = (x: number, y: number, w: number, h: number, layers: [ColorId, number
 const bx = (shape: ShapeName, x: number, y: number, color: ColorId, frozen?: number): BoxDef =>
   frozen ? { shape, x, y, color, frozen } : { shape, x, y, color };
 
+/** Wall cells from [x, y] pairs. */
+const wl = (...cells: [number, number][]) => cells.map(([x, y]) => ({ x, y }));
+/** A vertical run of wall cells at column x, rows y0..y1 (inclusive), as [x, y] pairs. */
+const wcol = (x: number, y0: number, y1: number): [number, number][] =>
+  Array.from({ length: y1 - y0 + 1 }, (_, i): [number, number] => [x, y0 + i]);
+/** A horizontal run of wall cells at row y, columns x0..x1 (inclusive), as [x, y] pairs. */
+const wrow = (y: number, x0: number, x1: number): [number, number][] =>
+  Array.from({ length: x1 - x0 + 1 }, (_, i): [number, number] => [x0 + i, y]);
+
 // Coordinates: x grows right, y grows DOWN, (0,0) is the top-left cell. Each level carries an
 // authored `solution` (drag steps "box#i -> (x,y)") that is replayed through the real sand
 // simulation by `npm run replay` and tests/levels-physics.test.ts; that replay is the proof the
@@ -76,6 +85,29 @@ const bx = (shape: ShapeName, x: number, y: number, color: ColorId, frozen?: num
 // - Timing: catches ~1 s; side drains 2-9 s per 2 cells; a 2x2 drinking from the side of a
 //   2-wide box keeps trickling for ~15-18 s.
 //
+// - BOX GRAVITY (chapter 2 "Workshop", physics-lab experiments GA..T12, PL, FR, PP): carrying is
+//   free (any path of empty cells), boxes fall when released, so the puzzle is what holds a box at a
+//   height and what touches what.
+//   * TRAY SHAFT works: a one-row sand box (a "tray", 1-3 wide, 1 cell per band) at the foot of a
+//     1-wide shaft. Only the bottom box touches it and drinks the top band (~8-10 s per 1x1); when it
+//     pops the stack drops one cell. Stack order bottom-up = band order top-down; a wrong box at the
+//     foot takes a ~0.08 wedge of a buried band and the tray jams. 4-wide trays (thinner bands) and
+//     2-cell bands in a 4-wide tray stall short; a 1x2 at the foot works but is slow (~44 s).
+//   * A band two cells deep needs two same-color 1x1s touching at the foot (one container, T8);
+//     split by another box they fail (T8b).
+//   * TALL SAND BOX + one box per layer does NOT work (GA/GH/GG): every box touches its buried layer
+//     at once, wedges cave the column in, ~40% drains. Even dropping the aligned stack at once fails.
+//   * Floating sand boxes: a box catches from below only while resting right under it (a wall ledge
+//     or a pillar of other boxes); a stack under it does not rise when the catcher pops, so the next
+//     catcher goes on the same support. Boxes cannot land side by side in the dock row (the sand box
+//     is above it), so a "wide catcher by landing" is not possible there.
+//   * Pins: a support pulled out (through a door in the shaft wall) drops the stack above it; a
+//     closet (walls on three sides) over a shaft holds a fixed order that drops when the pin goes. A
+//     pin at the shaft foot keeps a stack up so a higher box sits beside a second tray (two trays,
+//     one shaft). Frozen boxes don't dock: a frozen plug at the foot holds the sequence until it thaws.
+//   * Wall off every tray side a box could reach from the floor, or it is a second (bypass) contact.
+//   * Debris still matters: a floating sand box's leftover of a color blocks its next catch while
+//     another box of that color is on the board; give each floating sand box its own colors.
 // Map legend in the level comments: # sand box, capital letter = box (R red, O orange, Y yellow,
 // G green, T teal, B blue, P purple, K pink, W white), lower-case = frozen box, ^ v < > = empty belt
 // cell running in that direction, = wall, . empty.
@@ -608,6 +640,267 @@ export const LEVELS: LevelDef[] = [
     ],
     hint: 'Red and orange are each split between two sand boxes. Catch bottoms from below, drink tops from the side.',
     solution: ['box#1 -> (5,0)', 'box#2 -> (0,2)', 'box#2 -> (6,2)', 'box#0 -> (2,0)', 'box#0 -> (5,6)', 'box#3 -> (3,8)'],
+  },
+  // ---- Chapter 2: Workshop (box gravity) ----
+  //   . . . . . .
+  //   . . # # . .
+  //   . . . . . .
+  //   . = = = . .
+  //   . = . . . .
+  //   . = . . . .
+  //   . = . . . .
+  //   . # = B B R
+  // Solution: Carry the red to the top of the shaft and let go: it falls to the foot, lands beside
+  // the red sand and drinks it. The blue rests on the ledge right under the blue sand and catches it.
+  {
+    id: 'drop-in',
+    name: 'Drop In',
+    width: 6,
+    height: 8,
+    boxGravity: true,
+    sandBoxes: [sb(1, 7, 1, 1, [[R, 1]]), sb(2, 1, 2, 1, [[B, 2]])],
+    walls: wl(...wcol(1, 3, 6), [2, 3], [3, 3], [2, 7]),
+    boxes: [bx('1x1', 5, 7, R), bx('2x1', 3, 7, B)],
+    hint: 'Boxes fall here. Drop the red down the shaft: it lands beside the red sand and drinks it. Rest the blue on the ledge under the blue.',
+    solution: ['box#0 -> (0,0)', 'box#1 -> (2,2)'],
+  },
+  //   . . . . . . .
+  //   . . . . . . .
+  //   . = . . . . .
+  //   . = . . . . .
+  //   . = . . . . .
+  //   . = . . . . .
+  //   . = . . . . B
+  //   . = . . . . R
+  //   . # # # = . Y
+  // Solution: Only the box at the foot of the shaft touches the tray, and it drinks the top band.
+  // The pile is in the wrong order: park blue on the wall and red on the floor, drop yellow, then
+  // red, then blue; each pop drops the stack one cell onto the tray.
+  {
+    id: 'stack-order',
+    name: 'Stack Order',
+    width: 7,
+    height: 9,
+    boxGravity: true,
+    sandBoxes: [sb(1, 8, 3, 1, [[B, 1], [R, 1], [Y, 1]])],
+    walls: wl(...wcol(1, 2, 7), [4, 8]),
+    boxes: [bx('1x1', 6, 8, Y), bx('1x1', 6, 7, R), bx('1x1', 6, 6, B)],
+    hint: 'Only the bottom box of the shaft touches the tray, and it drinks the top band. When it pops the stack drops one. Load the top band\'s color first.',
+    solution: ['box#2 -> (4,7)', 'box#1 -> (5,8)', 'box#0 -> (0,0)', 'box#1 -> (0,0)', 'box#2 -> (0,0)'],
+  },
+  //   . . . . . . .
+  //   # # . . . # #
+  //   # # . . . # #
+  //   . . . . . . .
+  //   = = . . . = =
+  //   . . . . . . .
+  //   . . . . . . .
+  //   . . G G B B .
+  //   . . R R Y Y .
+  // Solution: Lift green and blue off the piles, catch red and yellow (the bottom layers) on the
+  // ledges, then blue and green on the same ledges.
+  {
+    id: 'shelf-life',
+    name: 'Shelf Life',
+    width: 7,
+    height: 9,
+    boxGravity: true,
+    sandBoxes: [sb(0, 1, 2, 2, [[R, 2], [B, 2]]), sb(5, 1, 2, 2, [[Y, 2], [G, 2]])],
+    walls: wl([0, 4], [1, 4], [5, 4], [6, 4]),
+    boxes: [bx('2x1', 2, 8, R), bx('2x1', 2, 7, G), bx('2x1', 4, 8, Y), bx('2x1', 4, 7, B)],
+    hint: 'A box resting on a ledge under a sand box catches its bottom layer. When it pops, rest the next one on the same ledge. Dig out the bottom layers first.',
+    solution: ['box#1 -> (2,6)', 'box#3 -> (2,5)', 'box#0 -> (0,3)', 'box#2 -> (5,3)', 'box#3 -> (0,3)', 'box#1 -> (5,3)'],
+  },
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . Y R Y G B . .
+  //   . = = = = = = .
+  //   . = = = = = = .
+  //   . = = = = = = .
+  //   . = = = = = = .
+  //   . # # # . # # .
+  // Solution: The left tray's top band is yellow two cells deep: drop both yellows (they touch, so
+  // they are one container and drink it through the bottom one), then red. Right shaft: blue, green.
+  {
+    id: 'pair-up',
+    name: 'Pair Up',
+    width: 8,
+    height: 9,
+    boxGravity: true,
+    sandBoxes: [sb(1, 8, 3, 1, [[R, 1], [Y, 2]]), sb(5, 8, 2, 1, [[G, 1], [B, 1]])],
+    walls: wl(...wrow(4, 1, 6), ...wrow(5, 1, 6), ...wrow(6, 1, 6), ...wrow(7, 1, 6)),
+    boxes: [bx('1x1', 1, 3, Y), bx('1x1', 2, 3, R), bx('1x1', 3, 3, Y), bx('1x1', 4, 3, G), bx('1x1', 5, 3, B)],
+    hint: 'Same-color boxes that touch are one container. The yellow band is two cells deep: only two yellows touching at the foot of the shaft can drink it all.',
+    solution: ['box#0 -> (0,0) &', 'box#2 -> (0,0) &', 'box#1 -> (0,0) &', 'box#4 -> (7,0) &', 'box#3 -> (7,0)'],
+  },
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . . . . . . . .
+  //   . = . . . . . .
+  //   . = . . # # . .
+  //   . = . . # # . .
+  //   . = . . . . Y O
+  //   . = = . . . R R
+  //   . # # = . . B B
+  // Solution: Stack orange then yellow under the floating sand box as a pillar, park red on the
+  // wall, catch blue then red on top of the pillar, then drop the pillar down the shaft: yellow
+  // (the top band) first, then orange.
+  {
+    id: 'pillar',
+    name: 'Pillar',
+    width: 8,
+    height: 9,
+    boxGravity: true,
+    sandBoxes: [sb(4, 4, 2, 2, [[B, 2], [R, 2]]), sb(1, 8, 2, 1, [[O, 1], [Y, 1]])],
+    walls: wl(...wcol(1, 3, 7), [2, 7], [3, 8]),
+    boxes: [bx('2x1', 6, 8, B), bx('2x1', 6, 7, R), bx('1x1', 6, 6, Y), bx('1x1', 7, 6, O)],
+    hint: 'Nothing holds a box under the floating sand box. Build a pillar from the small boxes, catch both layers on top of it, then take the pillar down the shaft: yellow first.',
+    solution: [
+      'box#3 -> (4,8)',
+      'box#2 -> (4,7)',
+      'box#1 -> (1,2)',
+      'box#0 -> (4,6)',
+      'box#1 -> (4,6)',
+      'box#2 -> (0,0)',
+      'box#3 -> (0,0)',
+    ],
+  },
+  //   = = . . # # .
+  //   R = . . . . .
+  //   O = . . = = .
+  //   P P . . . . .
+  //   . = . . . . .
+  //   . = . . . . .
+  //   . . . . . . .
+  //   . = . . . . .
+  //   . = = = . . .
+  //   . # # # = Y .
+  // Solution: Orange and red are sealed in a closet over the shaft, held by the purple pin. Feed
+  // yellow through the side door to the foot first, then pull the pin and catch purple on its ledge:
+  // orange and red drop onto yellow in the right order.
+  {
+    id: 'pull-the-pin',
+    name: 'Pull the Pin',
+    width: 7,
+    height: 10,
+    boxGravity: true,
+    sandBoxes: [sb(1, 9, 3, 1, [[R, 1], [O, 1], [Y, 1]]), sb(4, 0, 2, 1, [[P, 2]])],
+    walls: wl([0, 0], [1, 0], [1, 1], [1, 2], [1, 4], [1, 5], [1, 7], [1, 8], [2, 8], [3, 8], [4, 9], [4, 2], [5, 2]),
+    boxes: [bx('2x1', 0, 3, P), bx('1x1', 0, 2, O), bx('1x1', 0, 1, R), bx('1x1', 5, 9, Y)],
+    hint: 'The purple pin holds the closet shut. Once it is pulled, orange and red drop down the shaft in that order, so get the right box under them first.',
+    solution: ['box#3 -> (0,6)', 'box#0 -> (4,1)'],
+  },
+  //   . . . . . # .
+  //   . . . . . # .
+  //   . . . . . # .
+  //   . = . . . . .
+  //   . = . . . = .
+  //   . = . . . . .
+  //   W = . . . . .
+  //   G = . . . . .
+  //   B = = = . . .
+  //   y # # # = O R
+  // Solution: The frozen yellow plug thaws after three pops. Unload the shaft top-first (white,
+  // green onto the tray walls), catch blue, green, white under the floating column, then drop orange
+  // and red onto the thawed plug.
+  {
+    id: 'cold-stack',
+    name: 'Cold Stack',
+    width: 7,
+    height: 10,
+    boxGravity: true,
+    sandBoxes: [sb(1, 9, 3, 1, [[R, 1], [O, 1], [Y, 1]]), sb(5, 0, 1, 3, [[B, 1], [G, 1], [W, 1]])],
+    walls: wl(...wcol(1, 3, 8), [2, 8], [3, 8], [4, 9], [5, 4]),
+    boxes: [
+      bx('1x1', 0, 9, Y, 3),
+      bx('1x1', 0, 8, B),
+      bx('1x1', 0, 7, G),
+      bx('1x1', 0, 6, W),
+      bx('1x1', 5, 9, O),
+      bx('1x1', 6, 9, R),
+    ],
+    hint: 'The frozen plug thaws after three pops. Unload the shaft from the top, catch the column from below in its order, then stack the rest on the thawed plug.',
+    solution: [
+      'box#3 -> (3,7)',
+      'box#2 -> (2,7)',
+      'box#1 -> (5,3)',
+      'box#2 -> (5,3)',
+      'box#3 -> (5,3)',
+      'box#4 -> (0,0) &',
+      'box#5 -> (0,0)',
+    ],
+  },
+  //   . . . . . . # #
+  //   . . . = . . . .
+  //   . . . = . . = =
+  //   . . . = . . . .
+  //   . . . = . . . .
+  //   = = . = . . . .
+  //   # # . = . . . .
+  //   = = . = . . . .
+  //   = = . = . . G .
+  //   # # P P O R B .
+  // Solution: The purple pin holds the stack up so the box at row 6 sits beside the upper tray.
+  // Drop orange, red (supports), then blue and green (upper tray, top band first). Pull the pin out
+  // through the door to its ledge: the stack drops and orange then red drain the lower tray.
+  {
+    id: 'two-stories',
+    name: 'Two Stories',
+    width: 8,
+    height: 10,
+    boxGravity: true,
+    sandBoxes: [sb(0, 9, 2, 1, [[R, 1], [O, 1]]), sb(0, 6, 2, 1, [[G, 1], [B, 1]]), sb(6, 0, 2, 1, [[P, 2]])],
+    walls: wl([0, 5], [1, 5], [0, 7], [1, 7], [0, 8], [1, 8], ...wcol(3, 1, 8), [6, 2], [7, 2]),
+    boxes: [bx('2x1', 2, 9, P), bx('1x1', 4, 9, O), bx('1x1', 5, 9, R), bx('1x1', 6, 9, B), bx('1x1', 6, 8, G)],
+    hint: 'One shaft, two trays. The pin keeps the stack up so a box sits beside the upper tray; when the upper tray is done, pull the pin and the stack drops onto the lower one.',
+    solution: ['box#1 -> (2,0) &', 'box#2 -> (2,0) &', 'box#3 -> (2,0)', 'box#4 -> (2,0)', 'box#0 -> (6,1)'],
+  },
+  //   . . . . . . # #
+  //   . . . . . . . .
+  //   . . . . = . . =
+  //   . . . . = . . .
+  //   . . . . = . . .
+  //   = = = . = . . .
+  //   = # # . = . . .
+  //   = = = . = . . .
+  //   = = = R = . . .
+  //   = = = Y = . . .
+  //   # # # P P Y B g
+  // Solution: The shaft holds yellow and red on the purple pin. Park red on the frozen green, drop the
+  // second yellow (now touching the first: one container for the two-cell yellow band), red, then
+  // blue beside the upper tray; its pop thaws green, which follows. Pull the pin to its ledge: the
+  // yellow pair drinks its band, then red.
+  {
+    id: 'workshop',
+    name: 'Workshop',
+    width: 8,
+    height: 11,
+    boxGravity: true,
+    sandBoxes: [sb(0, 10, 3, 1, [[R, 1], [Y, 2]]), sb(1, 6, 2, 1, [[G, 1], [B, 1]]), sb(6, 0, 2, 1, [[P, 2]])],
+    walls: wl(
+      [0, 5], [1, 5], [2, 5], [0, 6],
+      ...wrow(7, 0, 2), ...wrow(8, 0, 2), ...wrow(9, 0, 2),
+      ...wcol(4, 2, 9),
+      [7, 2],
+    ),
+    boxes: [
+      bx('2x1', 3, 10, P),
+      bx('1x1', 3, 9, Y),
+      bx('1x1', 3, 8, R),
+      bx('1x1', 5, 10, Y),
+      bx('1x1', 6, 10, B),
+      bx('1x1', 7, 10, G, 1),
+    ],
+    hint: 'Finish the upper tray first, with the stack standing on the pin, then pull the pin. The yellow band is two cells deep: two yellows must touch at the bottom.',
+    solution: [
+      'box#2 -> (7,9)',
+      'box#3 -> (3,0) &',
+      'box#2 -> (3,0) &',
+      'box#4 -> (3,0)',
+      'box#5 -> (3,0)',
+      'box#0 -> (6,1)',
+    ],
   },
 ];
 
