@@ -262,3 +262,15 @@ runSeeds('HA2 push up past a sand box side (leak)', hlvl(lvl(6, 8, [[3, 0, 2, 3,
 // (push-the-pin, pusher, step-up, wrong-side).
 // Wrong Side v1 gave the hero ~5-6 s (yellow 1x1 side drain ~2.5 s + the thawed 1x2 draining two
 // cells) to get back down before the step melted: a timer. v2 waits up top instead (spatial).
+
+// ---- Pusher II part B (gravity hero levels, pusher2b.ts), 2026-10-30 ----
+// HB1 conduit: a frozen red face beside a red sand box thaws and joins the loose red steps leaning on
+// it (rule 6b group), so steps that can never move again still drain through the face. Measured:
+// 6 red cells (face 1x3 + 1x2 + 1x1) drain in ~10 s (Stairs, Long Way Round use it).
+runSeeds('HB1 thawed face drains the red steps leaning on it', hlvl(glvl(8, 9, [[5, 6, 2, 3, [[R, 6]]], [7, 4, 1, 1, [[Y, 1]]]],
+  [box('1x3', 4, 6, R, 1), box('1x2', 3, 7, R), box('1x1', 2, 8, R), box('1x1', 6, 5, Y)], col(7, 6, 8)), [5, 5]), ['R'], true);
+// HB2 half catch: a 1x2 under a 1x1 floating sand box takes one cell, then finishes beside a 1x1 tray
+// at a pit foot (~2 s) (Catch and Carry).
+runSeeds('HB2 1x2 catches half, then drinks the rest at a pit foot', hlvl(glvl(8, 10, [[2, 3, 1, 1, [[G, 1]]], [1, 9, 1, 1, [[G, 1]]]],
+  [box('1x2', 3, 4, G)], [...col(1, 6, 8), ...col(2, 6, 9), ...col(3, 6, 9), ...col(4, 6, 9), ...col(5, 6, 9)]), [4, 5]), ['L', 'LL'], true);
+// Results: HB1 wins on all seeds (~10 s); HB2 wins (~2 s for the second half).

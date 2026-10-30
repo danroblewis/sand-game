@@ -8,9 +8,10 @@ const SEEDS = [7, 1, 12345];
 
 describe('levels win in the real simulation', () => {
   for (const [index, level] of LEVELS.entries()) {
-    // Chapter 1 stays brisk (under 2 minutes, no wait over 25 s). Chapters 2-3 (box gravity, hero)
-    // stage sequences where one trigger drains a whole stack (a frozen plug thawing, a pin pulled),
-    // so they get 150 s total and up to 40 s for that one wait.
+    // Chapter 1 stays brisk (under 2 minutes, no wait over 25 s). Chapters 2+ (box gravity, hero:
+    // Workshop from index 18, Pusher and Pusher II from index 27) stage sequences where one trigger
+    // drains a whole stack (a frozen plug thawing, a pin pulled), so they get 150 s total and up to
+    // 40 s for that one wait.
     const [maxTotal, maxWait] = index < 18 ? [120, 25] : [150, 40];
     it(
       `${level.id} solution wins (seeds ${SEEDS.join(', ')})`,

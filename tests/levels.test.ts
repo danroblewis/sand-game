@@ -18,9 +18,9 @@ const base = (): LevelDef => ({
 });
 
 describe('LEVELS', () => {
-  it('has 14-50 levels', () => {
+  it('has 14-80 levels', () => {
     expect(LEVELS.length).toBeGreaterThanOrEqual(14);
-    expect(LEVELS.length).toBeLessThanOrEqual(50);
+    expect(LEVELS.length).toBeLessThanOrEqual(80);
   });
 
   it('chapter 1 (levels 1-18) has no box gravity; chapter 2 (Workshop) is all box gravity', () => {
@@ -34,19 +34,22 @@ describe('LEVELS', () => {
     });
   });
 
-  it('chapter 3 (Pusher, levels 28+) all have a hero, no belts; earlier levels have none', () => {
+  it('chapters 3+ (Pusher, Pusher II: levels 28+) all have a hero, no belts; earlier levels have none', () => {
     LEVELS.slice(0, 27).forEach((l) => expect(l.hero, l.id).toBeUndefined());
-    const ch3 = LEVELS.slice(27);
-    expect(ch3.length).toBeGreaterThanOrEqual(14);
-    expect(ch3.length).toBeLessThanOrEqual(16);
-    ch3.forEach((l) => {
+    const hero = LEVELS.slice(27);
+    expect(hero.length).toBeGreaterThanOrEqual(14);
+    hero.forEach((l) => {
       expect(l.hero, l.id).toBeDefined();
       expect(l.conveyors ?? [], `${l.id}: no belts in hero levels`).toEqual([]);
     });
-    // floating Sokoban first, then platform (gravity) Sokoban
-    const g = ch3.map((l) => !!l.boxGravity);
-    expect(g.indexOf(true)).toBeGreaterThanOrEqual(4);
-    expect(g.slice(g.indexOf(true)).every((x) => x)).toBe(true);
+    // within each hero chapter: floating Sokoban first, then platform (gravity) Sokoban
+    for (const ch of [LEVELS.slice(27, 41), LEVELS.slice(41)]) {
+      if (!ch.length) continue;
+      const g = ch.map((l) => !!l.boxGravity);
+      if (!g.includes(true)) continue;
+      expect(g.indexOf(true)).toBeGreaterThanOrEqual(4);
+      expect(g.slice(g.indexOf(true)).every((x) => x)).toBe(true);
+    }
   });
 
   it('has unique ids and names', () => {

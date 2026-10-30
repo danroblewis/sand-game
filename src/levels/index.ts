@@ -125,6 +125,9 @@ const wrow = (y: number, x0: number, x1: number): [number, number][] =>
 // G green, T teal, B blue, P purple, K pink, W white), lower-case = frozen box, ^ v < > = empty belt
 // cell running in that direction, = wall, @ hero, . empty.
 
+import { PUSHER2A } from './pusher2a';
+import { PUSHER2B } from './pusher2b';
+
 export const LEVELS: LevelDef[] = [
   //   . . . . . .
   //   . . # # . .
@@ -1260,6 +1263,8 @@ export const LEVELS: LevelDef[] = [
     hint: 'Push the pin from its right side and ride the closet down onto the frozen plug. You are the spacer: step out of the door when the stack should drop.',
     solution: ['LLLL', 'RR'],
   },
+  ...PUSHER2A,
+  ...PUSHER2B,
 ];
 
 export function getLevel(id: string): LevelDef | undefined {
