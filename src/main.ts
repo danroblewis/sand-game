@@ -8,6 +8,7 @@ import { attachPointer } from './input/pointer';
 import { attachKeyboard, fixSelection } from './input/keyboard';
 import { Hud } from './ui/hud';
 import { HeroInput, heroApi } from './input/hero';
+import { Sfx, measureSound } from './audio/sfx';
 import type { Dir } from './core/types';
 import { gravityFor } from './ui/progress';
 import type { GenerateOptions } from './levels/generate';
@@ -35,12 +36,26 @@ const hud = new Hud(app, {
   onPlaySeed: (d, seed, gravity, hero) =>
     loadRandom(d, seed, gravity ?? gravityFor(hud.randomMode, seed), hero ?? hud.randomHero),
   onUndo: () => undo(),
+  onSound: (on) => sfx.setEnabled(on),
   onHeroMove: (d) => heroKey(d),
 });
 hud.setLevels(LEVELS);
 hud.setDailySeed(generateDailySeed());
 
 const renderer = new Renderer(hud.canvas);
+
+// ---------- Sound: never autoplays; the context is created/resumed on the first user gesture ----------
+const sfx = new Sfx(hud.progress.sound);
+const unlockAudio = () => {
+  sfx.unlock();
+  if (sfx.state === 'running' || !sfx.isEnabled) {
+    for (const t of ['pointerdown', 'keydown', 'touchend']) window.removeEventListener(t, unlockAudio, true);
+  }
+};
+for (const t of ['pointerdown', 'keydown', 'touchend']) window.addEventListener(t, unlockAudio, { capture: true, passive: true });
+let flowThisFrame = 0;
+let popsThisFrame = 0;
+let heroFoot: 0 | 1 = 0;
 const view = createView();
 
 /** What is being played: a handmade campaign level or a generated one. */
@@ -95,6 +110,7 @@ function undo(): void {
   if (!state || !state.hero || !restore || undoStack.length === 0) return;
   heroInput.cancel();
   restore(state, undoStack.pop());
+  sfx.play('undo');
   state.events.length = 0;
   view.effects.length = 0;
   renderer.reset(); // snap to the restored positions
@@ -243,11 +259,54 @@ function initialLevel(): number {
   return firstOpen >= 0 ? firstOpen : 0;
 }
 
+/** Map game events to sounds (pops in one frame are staggered so a group chords, not stacks). */
+function playSound(ev: GameState['events'][number]): void {
+  switch (ev.type) {
+    case 'transfer':
+      flowThisFrame += ev.count;
+      break;
+    case 'boxCompleted':
+      sfx.play('pop', { color: ev.color, delay: Math.min(popsThisFrame++, 5) * 0.025 });
+      break;
+    case 'boxUnfrozen':
+      sfx.play('thaw');
+      break;
+    case 'boxLanded':
+    case 'heroLanded':
+      sfx.play('land', { fell: ev.fell });
+      break;
+    case 'heroMoved':
+      if (ev.climbed) sfx.play('climb');
+      else sfx.play('step', { foot: (heroFoot = heroFoot ? 0 : 1) });
+      break;
+    case 'heroPushed':
+      sfx.play('push');
+      break;
+    case 'boxMoved': {
+      // Player moves in drag levels only (falls and pushes have their own sounds).
+      if (state.hero) break;
+      const b = state.boxes.find((x) => x.id === ev.boxId);
+      if (b && !b.falling) sfx.play('slide');
+      break;
+    }
+    case 'won':
+      sfx.play('win', { delay: 0.2 });
+      break;
+    case 'debrisDissolved':
+      sfx.play('debris');
+      break;
+    case 'conveyed':
+      sfx.play('belt');
+      break;
+  }
+}
+
 function drainEvents(now: number): void {
   const evs = state.events;
   if (evs.length === 0) return;
   for (const ev of evs) {
     for (const fx of renderer.effectsForEvent(ev, state, now)) view.effects.push(fx);
+    playSound(ev);
     if (ev.type === 'won') {
       const won = state;
       const m = mode;
@@ -357,7 +416,10 @@ function frame(now: number): void {
     }
     if (steps === MAX_STEPS_PER_FRAME && accumulator > STEP_MS) accumulator = 0; // drop backlog
     view.stepFrac = Math.min(1, accumulator / STEP_MS);
+    flowThisFrame = 0;
+    popsThisFrame = 0;
     drainEvents(now);
+    sfx.update(dt / 1000, steps > 0 ? flowThisFrame / steps : 0);
     releaseGoneHeldBox();
     fixSelection(state, view);
     renderer.render(state, view, now);
@@ -400,6 +462,8 @@ window.__game = {
   restart,
   heroStep,
   undo,
+  sfx,
+  measureSound,
   get undoDepth() {
     return undoStack.length;
   },
