@@ -29,6 +29,8 @@ function planFall(state: GameState, apply: boolean): Box[] {
   const fell: Box[] = [];
   for (const b of fallOrder(state)) {
     if (b.id === state.heldBoxId) continue;
+    // An up-driven box ignores gravity (it lifts and supports its train); other driven boxes fall.
+    if (b.force === 'up' && b.frozen === 0) continue;
     if (!canPlace(state, b, b.x, b.y + 1)) continue;
     b.y++;
     fell.push(b);
@@ -37,10 +39,11 @@ function planFall(state: GameState, apply: boolean): Box[] {
   return fell;
 }
 
-/** True when the box cannot fall right now (something under it, the floor, or it is held). With
- *  box gravity off every box is supported. */
+/** True when the box cannot fall right now (something under it, the floor, it is held, or it is an
+ *  up-driven box). With box gravity off every box is supported. */
 export function boxSupported(state: GameState, box: Box): boolean {
   if (!state.boxGravity || box.state !== 'active' || box.id === state.heldBoxId) return true;
+  if (box.force === 'up' && box.frozen === 0) return true;
   return !canPlace(state, box, box.x, box.y + 1);
 }
 

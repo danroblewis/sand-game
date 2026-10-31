@@ -301,6 +301,28 @@ Chapter 1 does not). Rules:
   landing; tap-to-walk on touch (BFS through free cells; walking into a box pushes it); a 4-way
   d-pad overlay on phones; Tab/box selection disabled in hero levels; an Undo button.
 
+## Driven boxes (force on a box)
+
+`BoxDef.force: Dir` makes a **driven box**: a colored box with a built-in thrust in one direction,
+drawn on the box itself (a thruster/chevron on its back edge, exhaust while moving, a compressed
+glow while pressing). Rules:
+- Every `BOX_FALL_INTERVAL` (4) steps, each active, unfrozen, not-held, not-sliding driven box
+  tries to move one cell in `force`, pushing the **train** in front of it: the closure of active
+  unfrozen boxes that would be overlapped by moving the set one cell (like a Sokoban multi-push).
+  If every cell the train would move into is free (not wall, sand box, frozen box, hero, board
+  edge, or a box outside the train), the whole train moves (emit `forcePushed`, `shakeBox` each);
+  otherwise nothing moves and the driven box is `pressing`. Several driven boxes resolve in id
+  order, repeated until nothing more moves; a train containing two opposed driven boxes is stuck.
+- Driven boxes ignore gravity in the direction of their force (an upward-driven box lifts its train
+  and supports it); otherwise gravity applies normally (a right-driven box on a ledge still falls).
+- The hero cannot push a driven box against its force (it resists); pushes along or across the
+  force are normal pushes; kicks across the force are allowed; a kick along the force is just a push.
+- Driven boxes drain and complete like any box of their color; when they pop, the force is gone.
+  Frozen driven boxes do nothing until thawed. Groups (rule 6b) apply as usual.
+- Validator: `force` must be a valid Dir; a driven box may start pressing (nothing moves) or free.
+- Purpose: stage a sequence with a visible pusher: a driven box behind a stack presses it against a
+  sand box; when the front box pops the train advances at once. It replaces belts/springs/zones.
+
 ## Big maps (Chapter 5 "Expanse")
 
 Boards may be much larger than the screen (e.g. 16x16 to 32x14). `LevelDef.camera` selects how

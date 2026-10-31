@@ -43,3 +43,4 @@ export { applyBoxGravity, boxSupported, fallPlan } from './gravity';
 export { moveHero, heroGravity, heroSupported, heroCellFree, heroCanPush, kickBox, applySliding, slidePlan } from './hero';
 export { snapshotState, restoreState } from './snapshot';
 export type { GameSnapshot } from './snapshot';
+export { applyForces, forcePlan, forceTrain } from './force';

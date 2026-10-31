@@ -15,6 +15,8 @@ export interface GameSnapshot {
   boxStates: BoxState[];
   pushDirs: (Dir | null)[];
   slidings: (Dir | null)[];
+  forces: (Dir | null)[];
+  pressings: boolean[];
   slideCounts: [number, number][];
   hero: HeroState | null;
   conveyorPhase: Float64Array;
@@ -46,6 +48,8 @@ export function snapshotState(state: GameState): GameSnapshot {
     boxStates: state.boxes.map((b) => b.state),
     pushDirs: state.boxes.map((b) => b.pushDir),
     slidings: state.boxes.map((b) => b.sliding),
+    forces: state.boxes.map((b) => b.force),
+    pressings: state.boxes.map((b) => b.pressing),
     slideCounts: slideSave(state),
     hero: state.hero ? { ...state.hero } : null,
     conveyorPhase: Float64Array.from(state.conveyors.map((c) => c.phase)),
@@ -77,6 +81,8 @@ export function restoreState(state: GameState, snap: GameSnapshot): void {
     b.state = snap.boxStates[i];
     b.pushDir = snap.pushDirs[i];
     b.sliding = snap.slidings[i];
+    b.force = snap.forces[i];
+    b.pressing = snap.pressings[i];
   });
   state.hero = snap.hero ? { ...snap.hero } : null;
   state.conveyors.forEach((c, i) => (c.phase = snap.conveyorPhase[i]));

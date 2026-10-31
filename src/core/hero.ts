@@ -6,6 +6,7 @@ import { boxCoversCell, canPlace, sandBoxAtCell, shakeBox, wallAtCell } from './
 import { KICK_INTERVAL } from './constants';
 
 const VEC: Record<Dir, [number, number]> = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+const OPP: Record<Dir, Dir> = { up: 'down', down: 'up', left: 'right', right: 'left' };
 
 /** Active box (frozen or not) covering (gx, gy). */
 function boxAt(state: GameState, gx: number, gy: number): Box | undefined {
@@ -28,6 +29,7 @@ export function heroSupported(state: GameState): boolean {
 
 /** Can the hero push this box one cell by (dx, dy)? (active, unfrozen, fits; hero cell ignored) */
 export function heroCanPush(state: GameState, box: Box, dx: number, dy: number): boolean {
+  if (box.force !== null && box.frozen === 0 && VEC[box.force][0] === -dx && VEC[box.force][1] === -dy) return false; // resists
   return box.state === 'active' && box.frozen === 0 && box.sliding === null && canPush(state, box, box.x + dx, box.y + dy);
 }
 
@@ -70,7 +72,8 @@ export function moveHero(state: GameState, dir: Dir): boolean {
   };
   if (heroCellFree(state, tx, ty)) return walk(tx, ty, false);
   const box = boxAt(state, tx, ty);
-  if (box && box.frozen === 0 && box.sliding === null && canPush(state, box, box.x + dx, box.y + dy)) {
+  const resists = box !== undefined && box.force !== null && box.frozen === 0 && box.force === OPP[dir];
+  if (box && !resists && box.frozen === 0 && box.sliding === null && canPush(state, box, box.x + dx, box.y + dy)) {
     box.x += dx;
     box.y += dy;
     state.events.push({ type: 'heroPushed', boxId: box.id, dir });
@@ -126,7 +129,8 @@ export function slideLoad(state: GameState, saved: [number, number][]): void {
  * Kick the box next to the hero in `dir`: if it is active, unfrozen, not already sliding and can
  * move one cell in `dir`, it starts sliding (`box.sliding = dir`, one cell per KICK_INTERVAL steps
  * until blocked); the hero stays put and faces `dir`. Counts as a move; emits `heroKicked`. In
- * gravity levels only sideways kicks, and only while the hero stands on something.
+ * gravity levels only sideways kicks, and only while the hero stands on something. A driven box
+ * resists a kick against its force; a kick along its force is a normal push (moveHero).
  */
 export function kickBox(state: GameState, dir: Dir): boolean {
   const h = state.hero;
@@ -138,6 +142,9 @@ export function kickBox(state: GameState, dir: Dir): boolean {
   const [dx, dy] = VEC[dir];
   const box = boxAt(state, h.x + dx, h.y + dy);
   if (!box || box.frozen > 0 || box.sliding !== null) return false;
+  // Driven boxes: a kick against the force is resisted; a kick along it is just a push.
+  if (box.force !== null && box.force === OPP[dir]) return false;
+  if (box.force === dir) return moveHero(state, dir);
   if (!canPush(state, box, box.x + dx, box.y + dy)) return false;
   box.sliding = dir;
   slidOf(state).set(box.id, 0);

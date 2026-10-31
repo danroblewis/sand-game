@@ -9,6 +9,7 @@ import { applyConveyors, buildConveyor } from './conveyors';
 import { connectedGroups } from './grid';
 import { applyBoxGravity } from './gravity';
 import { applySliding } from './hero';
+import { applyForces } from './force';
 import { COMPLETION_SLACK, DISSOLVE_STEPS } from './constants';
 import { nextFloat } from './rng';
 import { touchRegion } from './sand';
@@ -44,6 +45,8 @@ export function createGame(level: LevelDef, seed = 1): GameState {
       pushDir: null,
       falling: 0,
       sliding: null,
+      force: def.force ?? null,
+      pressing: false,
     };
   });
   return {
@@ -82,6 +85,7 @@ export function stepGame(state: GameState): void {
   // Kicked boxes slide before belts and gravity: a box that slides off a ledge stops sliding on
   // that step and the gravity pass then drops it normally.
   applySliding(state);
+  applyForces(state); // driven boxes push their trains (before gravity: up-driven boxes hold)
   applyConveyors(state); // box moves change the dockings: the space rebuilds next step
   applyBoxGravity(state);
   checkCompletions(state);

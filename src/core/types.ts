@@ -71,6 +71,9 @@ export interface BoxDef {
   color: ColorId;
   /** If > 0, the box starts frozen and unfreezes after this many boxes are completed. */
   frozen?: number;
+  /** A driven box: it has a built-in force in this direction. It moves the moment it can (one cell
+   *  per BOX_FALL_INTERVAL steps) and pushes the train of boxes in front of it. See DESIGN.md. */
+  force?: Dir;
 }
 
 export type Dir = 'up' | 'down' | 'left' | 'right';
@@ -156,6 +159,10 @@ export interface Box {
   /** Direction this box is sliding in after a kick, or null. It moves one cell per KICK_INTERVAL
    *  steps until blocked (or until it falls under gravity). */
   sliding: Dir | null;
+  /** Built-in force direction for a driven box, or null (copied from BoxDef.force). */
+  force: Dir | null;
+  /** True while a driven box is pressing against something it cannot move (for rendering). */
+  pressing: boolean;
   /** Fine grid region sized bw*N by bh*N with a mask built from `cells`. */
   region: SandRegion;
   state: BoxState;
@@ -201,6 +208,7 @@ export type GameEvent =
   | { type: 'heroLanded'; fell: number }
   | { type: 'heroKicked'; boxId: number; dir: Dir }
   | { type: 'boxSlid'; boxId: number; dir: Dir; cells: number }
+  | { type: 'forcePushed'; boxId: number; boxIds: number[]; dir: Dir }
   | { type: 'boxUnfrozen'; boxId: number }
   | { type: 'boxMoved'; boxId: number; x: number; y: number }
   | { type: 'transfer'; count: number }
