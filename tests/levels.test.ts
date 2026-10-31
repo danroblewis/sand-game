@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { LevelDef } from '../src/core/types';
 import { LEVELS, getLevel } from '../src/levels/index';
 import { levelCapacityByColor, levelSandByColor, validateLevel, validateLevels } from '../src/levels/validate';
-import { parseHeroEntry, parseStep, settle } from '../src/levels/replay';
+import { parseHeroEntry, parseStep, replayLevel, settle } from '../src/levels/replay';
 import { createGame } from '../src/core';
 
 const base = (): LevelDef => ({
@@ -111,6 +111,46 @@ describe('LEVELS', () => {
   it('introduces frozen boxes no earlier than level 7', () => {
     LEVELS.slice(0, 6).forEach((l) => expect(l.boxes.some((b) => b.frozen)).toBe(false));
     expect(LEVELS.slice(6).filter((l) => l.boxes.some((b) => b.frozen)).length).toBeGreaterThan(5);
+  });
+});
+
+describe('hero solutions with kicks', () => {
+  it('parses K + direction as a kick', () => {
+    expect(parseHeroEntry('RRKLDD')).toEqual([
+      { dir: 'right', kick: false },
+      { dir: 'right', kick: false },
+      { dir: 'left', kick: true },
+      { dir: 'down', kick: false },
+      { dir: 'down', kick: false },
+    ]);
+    expect(parseHeroEntry('RK')).toBeNull(); // a kick needs a direction
+    expect(parseHeroEntry('KX')).toBeNull();
+  });
+
+  it('a kicked box slides until blocked and the entry settles only after it stops', () => {
+    // hero at (0,3) kicks the red right: it slides past (2,3) and stops against the wall at (4,3),
+    // right under the red sand box at (3,2), and catches it; the hero never moves
+    const lv: LevelDef = {
+      id: 'kick-test',
+      name: 'Kick Test',
+      width: 6,
+      height: 6,
+      hero: { x: 0, y: 3 },
+      sandBoxes: [{ x: 3, y: 2, w: 1, h: 1, layers: [{ color: 1, amount: 1 }] }],
+      walls: [{ x: 4, y: 3 }],
+      boxes: [{ shape: '1x1', x: 1, y: 3, color: 1 }],
+      solution: ['KR'],
+    };
+    expect(validateLevel(lv)).toEqual([]);
+    for (const seed of [7, 1]) {
+      const r = replayLevel(lv, lv.solution!, { seed });
+      expect(r.won, r.why).toBe(true);
+      expect(r.inputs).toBe(1);
+      expect(r.kicks).toBe(1);
+      expect(r.state.hero).toMatchObject({ x: 0, y: 3 });
+    }
+    // a plain push moves it one cell only: not under the sand box, no win
+    expect(replayLevel(lv, ['R'], { seed: 7 }).won).toBe(false);
   });
 });
 

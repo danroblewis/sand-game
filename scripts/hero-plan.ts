@@ -6,10 +6,12 @@
 // the same push / fall / climb rules as src/core/hero.ts) and prints the shortest input string.
 // It knows nothing about sand: pin the positions of boxes that must not move (extra goals), then
 // prove the result with the replay. In zsh pass multi-goal strings unquoted or with ${=var}.
+// --kick also searches kicks (K + direction: the box slides until blocked, the hero stays).
 import { getLevel } from '../src/levels';
 import { replayLevel } from '../src/levels/replay';
 import { SHAPES } from '../src/core/shapes';
-const args = process.argv.slice(2);
+const kicks = process.argv.includes('--kick');
+const args = process.argv.slice(2).filter((a) => a !== '--kick');
 const sep = args.indexOf('::');
 const [id, ...entries] = sep < 0 ? args : args.slice(0, sep);
 const goals = sep < 0 ? [] : args.slice(sep + 1);
@@ -68,6 +70,23 @@ function step(s0: S, d: string): S | null {
   if (grav && free(o, tx, ty - 1) && free(o, s.hx, s.hy - 1)) { s.hx = tx; s.hy = ty - 1; settleGrav(s); return s; }
   return null;
 }
+/** Kick (DESIGN.md "Kick"): the adjacent box slides in `d` until blocked; under gravity it stops as
+ *  soon as it is unsupported after a slide step and then falls. The hero stays put. */
+function kick(s0: S, d: string): S | null {
+  if (grav && (d === 'U' || d === 'D')) return null;
+  if (grav && free(occ(s0), s0.hx, s0.hy + 1)) return null; // can't kick in mid-air
+  const [dx, dy] = D[d];
+  const tx = s0.hx + dx, ty = s0.hy + dy;
+  const i = mov.findIndex((_, k) => cells[k].some((c) => s0.p[2 * k] + c.x === tx && s0.p[2 * k + 1] + c.y === ty));
+  if (i < 0 || !fits(s0, i, s0.p[2 * i] + dx, s0.p[2 * i + 1] + dy, true)) return null;
+  const s: S = { hx: s0.hx, hy: s0.hy, p: s0.p.slice() };
+  while (fits(s, i, s.p[2 * i] + dx, s.p[2 * i + 1] + dy, true)) {
+    s.p[2 * i] += dx; s.p[2 * i + 1] += dy;
+    if (grav && fits(s, i, s.p[2 * i], s.p[2 * i + 1] + 1, true)) break;
+  }
+  settleGrav(s);
+  return s;
+}
 const goalFns = goals.map((g) => {
   const [who, xy] = g.split(':'); const [gx, gy] = xy.split(',').map(Number);
   if (who === 'h') return (s: S) => s.hx === gx && s.hy === gy;
@@ -87,12 +106,13 @@ for (let qi = 0; qi < q.length && qi < 3_000_000; qi++) {
     process.exit(0);
   }
   for (const d of 'UDLR') {
-    const n = step(s, d);
-    if (!n) continue;
-    const k = key(n);
-    if (prev.has(k)) continue;
-    prev.set(k, [key(s), d]);
-    q.push(n);
+    for (const [n, label] of [[step(s, d), d], [kicks ? kick(s, d) : null, 'K' + d]] as [S | null, string][]) {
+      if (!n) continue;
+      const k = key(n);
+      if (prev.has(k)) continue;
+      prev.set(k, [key(s), label]);
+      q.push(n);
+    }
   }
 }
 console.log('no plan found');

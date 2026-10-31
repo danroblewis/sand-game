@@ -1,7 +1,7 @@
 // Replays a drag plan ("box#i -> (x,y)") through the real simulation. This is the proof that a
 // level is winnable: the abstract solver is only a heuristic now that sand obeys gravity.
 import type { Box, Dir, GameState, LevelDef } from '../core/types';
-import { canPlace, createGame, fallPlan, heroSupported, moveHero, regionVersion, stepGame, tryMoveBox } from '../core';
+import { canPlace, createGame, fallPlan, heroSupported, kickBox, moveHero, regionVersion, stepGame, tryMoveBox } from '../core';
 import { STEPS_PER_SECOND } from '../core/constants';
 
 export interface ReplayOptions {
@@ -24,8 +24,10 @@ export interface ReplayResult {
   /** Total sim steps (60 per second). */
   steps: number;
   drags: number;
-  /** Hero levels: hero inputs (U/D/L/R) issued; 0 otherwise. */
+  /** Hero levels: hero inputs (moves and kicks) issued; 0 otherwise. */
   inputs: number;
+  /** Hero levels: kicks among `inputs`. */
+  kicks: number;
   /** Sim seconds each completed box took from the drag that preceded its completion. */
   fills: string[];
   /** Longest single settle after a drag, in sim steps. */
@@ -41,18 +43,36 @@ const STEP_RE = /^box#(\d+) -> \((-?\d+),(-?\d+)\)( &)?$/;
 /** Sim steps between a no-wait drag ("... &") and the next drag (0.5 s). */
 export const GRAB_STEPS = 30;
 
-/** Hero levels: each solution entry is a string of U/D/L/R inputs. */
-const HERO_RE = /^[UDLR]+$/;
+/** Hero levels: each solution entry is a string of inputs: U/D/L/R moves, or K followed by a
+ *  direction letter for a kick (DESIGN.md "Kick"), e.g. "RRKLDD". */
+const HERO_RE = /^(?:[UDLR]|K[UDLR])+$/;
 const HERO_DIR: Record<string, Dir> = { U: 'up', D: 'down', L: 'left', R: 'right' };
+
+/** One hero input: a move or a kick in `dir`. */
+export interface HeroInput {
+  dir: Dir;
+  kick: boolean;
+}
 
 /** Sim steps between two hero inputs in one entry (a quick but human pace; lets a pushed box
  *  start falling or docking before the next input). */
 export const HERO_INPUT_STEPS = 6;
 
-/** Hero entry ("RRU") → directions, or null if it is not a valid hero entry. */
-export function parseHeroEntry(entry: string): Dir[] | null {
+/** Hero entry ("RRKLU") → inputs, or null if it is not a valid hero entry. */
+export function parseHeroEntry(entry: string): HeroInput[] | null {
   const t = entry.trim();
-  return HERO_RE.test(t) ? [...t].map((c) => HERO_DIR[c]) : null;
+  if (!HERO_RE.test(t)) return null;
+  const out: HeroInput[] = [];
+  for (let i = 0; i < t.length; i++) {
+    if (t[i] === 'K') out.push({ dir: HERO_DIR[t[++i]], kick: true });
+    else out.push({ dir: HERO_DIR[t[i]], kick: false });
+  }
+  return out;
+}
+
+/** True while a kicked box is still sliding. */
+function anySliding(state: GameState): boolean {
+  return state.boxes.some((b) => b.state === 'active' && b.sliding !== null);
 }
 
 /** True when the hero (box gravity) has nothing right below it and would fall. */
@@ -125,7 +145,7 @@ export function settle(state: GameState, quiet = 45, max = 3600): number {
     const v = versionSum(state);
     // a box still falling (box gravity) is activity too: a drag that drops a stack is not settled
     // until everything has landed
-    if (v === last && !beltBusy(state) && fallPlan(state).size === 0 && !heroCanFall(state)) {
+    if (v === last && !beltBusy(state) && fallPlan(state).size === 0 && !heroCanFall(state) && !anySliding(state)) {
       if (++still >= quiet) break;
     } else {
       still = 0;
@@ -145,6 +165,7 @@ export function replayLevel(level: LevelDef, plan: string[], opts: ReplayOptions
   let why = '';
   let drags = 0;
   let inputs = 0;
+  let kicks = 0;
   for (const step of plan) {
     if (state.won && state.hero) break;
     if (state.hero) {
@@ -159,13 +180,17 @@ export function replayLevel(level: LevelDef, plan: string[], opts: ReplayOptions
       const t = state.tick;
       let s = 0;
       for (let k = 0; k < dirs.length && !state.won; k++) {
-        if (!moveHero(state, dirs[k])) {
-          why = `${step}: input ${k + 1} (${step[k]}) blocked with the hero at (${state.hero.x},${state.hero.y})`;
+        const { dir, kick } = dirs[k];
+        if (!(kick ? kickBox(state, dir) : moveHero(state, dir))) {
+          const label = `${kick ? 'K' : ''}${dir[0].toUpperCase()}`;
+          why = `${step}: input ${k + 1} (${label}) blocked with the hero at (${state.hero.x},${state.hero.y})`;
           break;
         }
         inputs++;
-        // a few steps per input, more while the hero is still falling (gravity levels)
-        for (let i = 0; (i < (opts.heroInputSteps ?? HERO_INPUT_STEPS) || heroCanFall(state) || state.hero.falling > 0) && i < 600 && !state.won; i++) {
+        if (kick) kicks++;
+        // a few steps per input, more while the hero is still falling (gravity levels) or a kicked
+        // box is still sliding
+        for (let i = 0; (i < (opts.heroInputSteps ?? HERO_INPUT_STEPS) || heroCanFall(state) || state.hero.falling > 0 || anySliding(state)) && i < 600 && !state.won; i++) {
           stepGame(state);
           s++;
         }
@@ -222,7 +247,7 @@ export function replayLevel(level: LevelDef, plan: string[], opts: ReplayOptions
     opts.onDrag?.(step, state, s);
   }
   if (!why && !state.won) why = 'plan finished but level not won';
-  return { won: state.won && !why, why, steps, drags, inputs, fills, longestSettle: longest, state };
+  return { won: state.won && !why, why, steps, drags, inputs, kicks, fills, longestSettle: longest, state };
 }
 
 const CH = '?ROYGTBIPKNWC';

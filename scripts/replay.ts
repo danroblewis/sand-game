@@ -36,7 +36,7 @@ for (const level of LEVELS) {
   const secs = (r.steps / 60).toFixed(1);
   if (r.won) {
     wins++;
-    console.log(`✓ ${level.id.padEnd(14)} ${level.hero ? `entries=${r.drags} inputs=${r.inputs}` : `drags=${r.drags}`} sim=${secs}s longest=${(r.longestSettle / 60).toFixed(1)}s (${src}, ${ms}ms) fills: ${r.fills.join(' ')}`);
+    console.log(`✓ ${level.id.padEnd(14)} ${level.hero ? `entries=${r.drags} inputs=${r.inputs}${r.kicks ? ` kicks=${r.kicks}` : ''}` : `drags=${r.drags}`} sim=${secs}s longest=${(r.longestSettle / 60).toFixed(1)}s (${src}, ${ms}ms) fills: ${r.fills.join(' ')}`);
   } else {
     console.log(`✗ ${level.id.padEnd(14)} ${r.why} sim=${secs}s  ${describeState(r.state)}`);
   }
