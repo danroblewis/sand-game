@@ -90,6 +90,7 @@ export interface HeroInputDeps {
 }
 
 const STEP_MS = 90;
+const FAST_STEP_MS = 45;
 const SWIPE_PX = 24;
 
 export class HeroInput {
@@ -168,11 +169,15 @@ export class HeroInput {
   }
 
   private airWait = 0;
+  private stepsTaken = 0;
 
   private walkNext(first: boolean): void {
     const d = this.path.shift();
     if (!d) return this.cancel();
-    if (first) this.airWait = 0;
+    if (first) {
+      this.airWait = 0;
+      this.stepsTaken = 0;
+    }
     if (!this.deps.step(d)) {
       // Gravity levels: the hero can't move while falling (e.g. just walked off a ledge): wait for
       // it to land and carry on, for up to ~2 s. Any other failure (a wall, a stuck box) stops.
@@ -186,6 +191,8 @@ export class HeroInput {
       return this.cancel();
     }
     if (this.path.length === 0) return this.cancel();
-    this.timer = window.setTimeout(() => this.walkNext(false), STEP_MS);
+    // Long paths speed up after the third step.
+    this.stepsTaken++;
+    this.timer = window.setTimeout(() => this.walkNext(false), this.stepsTaken >= 3 ? FAST_STEP_MS : STEP_MS);
   }
 }

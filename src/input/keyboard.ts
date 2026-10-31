@@ -13,6 +13,10 @@ export interface KeyboardActions {
   heroMove?: (dir: Dir) => void;
   /** Hero levels: undo the last hero move (Z / U). */
   undo?: () => void;
+  /** Big maps: toggle the overview (O). */
+  overview?: () => void;
+  /** Open the gear menu (Esc when nothing is selected, or M). */
+  menu?: () => void;
 }
 
 const HERO_KEYS: Record<string, Dir> = {
@@ -133,7 +137,16 @@ export function attachKeyboard(deps: KeyboardDeps): () => void {
     }
     switch (e.key) {
       case 'Escape':
-        view.selectedBoxId = null;
+        if (view.selectedBoxId !== null) view.selectedBoxId = null;
+        else actions.menu?.();
+        break;
+      case 'o':
+      case 'O':
+        actions.overview?.();
+        break;
+      case 'm':
+      case 'M':
+        actions.menu?.();
         break;
       case 'r':
       case 'R':

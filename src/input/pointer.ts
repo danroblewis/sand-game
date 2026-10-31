@@ -27,7 +27,15 @@ interface DragInfo {
 const noCtxFn = (e: Event) => e.preventDefault();
 
 /** Attach pointer handlers. Returns a detach function. */
-export function attachPointer(deps: PointerDeps): () => void {
+export interface PointerControl {
+  detach: () => void;
+  /** Per frame: re-apply the drag at the last finger position (the camera may have moved). */
+  tick: () => void;
+  /** End a drag in progress (e.g. a pinch started). */
+  cancel: () => void;
+}
+
+export function attachPointer(deps: PointerDeps): PointerControl {
   const { canvas, renderer, getState, view } = deps;
   canvas.style.touchAction = 'none';
   let drag: DragInfo | null = null;
@@ -44,6 +52,7 @@ export function attachPointer(deps: PointerDeps): () => void {
     if (!d) return;
     drag = null;
     view.dragBoxId = null;
+    view.dragEdge = undefined;
     // Release: conveyors may carry the box again.
     if (d.state.heldBoxId === d.boxId) d.state.heldBoxId = null;
     if (d.moved && d.state === getState()) d.state.moves += 1;
@@ -75,6 +84,9 @@ export function attachPointer(deps: PointerDeps): () => void {
     drag = { pointerId: e.pointerId, boxId: box.id, state, offX: g.x - box.x, offY: g.y - box.y, moved: false };
     view.selectedBoxId = box.id;
     view.dragBoxId = box.id;
+    view.lastMovedBoxId = box.id;
+    lastPx = px;
+    lastPy = py;
     // Held boxes are never carried by conveyors (and block boxes behind them).
     state.heldBoxId = box.id;
     canvas.setPointerCapture(e.pointerId);
@@ -89,18 +101,39 @@ export function attachPointer(deps: PointerDeps): () => void {
       return;
     }
     if (e.pointerId !== drag.pointerId) return;
+    lastPx = px;
+    lastPy = py;
+    applyDrag(px, py);
+  };
+
+  let lastPx = 0;
+  let lastPy = 0;
+  /** Move the dragged box toward the finger (viewport coords go through the camera). */
+  const applyDrag = (px: number, py: number) => {
+    if (!drag) return;
     const state = getState();
     const box = state === drag.state ? findBox(state, drag.boxId) : undefined;
     if (!box || box.state !== 'active' || box.frozen > 0) {
       endDrag();
       return;
     }
+    // Big maps: near a viewport edge the camera looks ahead in that direction (edge-scroll).
+    if (renderer.cameraActive) {
+      const r = canvas.getBoundingClientRect();
+      const m = 40;
+      const ex = px < m ? -1 : px > r.width - m ? 1 : 0;
+      const ey = py < m ? -1 : py > r.height - m ? 1 : 0;
+      view.dragEdge = ex || ey ? { x: ex, y: ey } : undefined;
+    }
     const g = renderer.pixelToGrid(px, py);
     // Round (rather than floor) so the box follows the finger with half-cell hysteresis.
     const tx = Math.round(g.x - drag.offX);
     const ty = Math.round(g.y - drag.offY);
     if (tx !== box.x || ty !== box.y) {
-      if (moveBoxToward(state, box.id, tx, ty) > 0) drag.moved = true;
+      if (moveBoxToward(state, box.id, tx, ty) > 0) {
+        drag.moved = true;
+        view.lastMovedBoxId = box.id;
+      }
     }
   };
 
@@ -137,7 +170,7 @@ export function attachPointer(deps: PointerDeps): () => void {
   canvas.addEventListener('pointerleave', onLeave);
   canvas.addEventListener('contextmenu', noCtxFn);
 
-  return () => {
+  const detach = () => {
     canvas.removeEventListener('pointerdown', onDown);
     canvas.removeEventListener('pointermove', onMove);
     canvas.removeEventListener('pointerup', onUp);
@@ -149,5 +182,12 @@ export function attachPointer(deps: PointerDeps): () => void {
     canvas.removeEventListener('touchstart', stopTouch);
     canvas.removeEventListener('touchmove', stopTouch);
     canvas.removeEventListener('touchend', stopTouch);
+  };
+  return {
+    detach,
+    tick: () => {
+      if (drag && renderer.cameraActive) applyDrag(lastPx, lastPy);
+    },
+    cancel: endDrag,
   };
 }

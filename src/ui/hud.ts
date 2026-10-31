@@ -27,6 +27,10 @@ export interface HudHandlers {
   onHaptics?: (on: boolean) => void;
   /** Haptics button held for 1 s and released: play the test pattern. */
   onHapticsTest?: () => void;
+  /** Big maps: toggle the overview. */
+  onOverview?: () => void;
+  /** The gear menu opened / closed (pause input). */
+  onMenu?: (open: boolean) => void;
 }
 
 export type WinKind = 'next' | 'last' | 'random';
@@ -45,6 +49,8 @@ const ICONS = {
   hapticsOn: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="4" width="8" height="16" rx="2"/><path d="M4.5 9v6M19.5 9v6M2 10.5v3M22 10.5v3"/></svg>',
   hapticsOff: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="4" width="8" height="16" rx="2"/><path d="M4 4l16 16"/></svg>',
   soundOff: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>',
+  gear: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/><circle cx="12" cy="12" r="6.4"/></svg>',
+  map: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 6.5l5.5-2 6 2 5.5-2v13l-5.5 2-6-2-5.5 2z"/><path d="M9 4.5v13M15 6.5v13"/></svg>',
   check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
   dice: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="9" cy="9" r="1.1" fill="currentColor"/><circle cx="15" cy="15" r="1.1" fill="currentColor"/><circle cx="15" cy="9" r="1.1" fill="currentColor"/><circle cx="9" cy="15" r="1.1" fill="currentColor"/></svg>',
   sun: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg>',
@@ -105,7 +111,6 @@ export class Hud {
   progress: Progress;
 
   private top: HTMLElement;
-  private bottom: HTMLElement;
   private levelNum: HTMLElement;
   private levelName: HTMLElement;
   private hint: HTMLElement;
@@ -114,8 +119,10 @@ export class Hud {
   private hapticsBtn!: HTMLButtonElement;
   private prevBtn: HTMLButtonElement;
   private undoBtn!: HTMLButtonElement;
-  /** Touch d-pad (hero levels). */
-  readonly dpad: HTMLElement;
+  private overviewBtn!: HTMLButtonElement;
+  private modeIcons!: HTMLElement;
+  private menu!: HTMLElement;
+  private menuTitle!: HTMLElement;
   private nextBtn: HTMLButtonElement;
   private picker: HTMLElement;
   private pickerGrid: HTMLElement;
@@ -165,7 +172,7 @@ export class Hud {
     moves.append(el('span', 'moves-label', 'Moves'));
     this.movesEl = el('span', 'moves-value', '0');
     moves.append(this.movesEl);
-    this.soundBtn = el('button', 'btn-sound btn-mute');
+    this.soundBtn = el('button', 'btn menu-toggle btn-mute');
     this.soundBtn.type = 'button';
     // Hold 1 s for audio diagnostics (that press does not toggle).
     let holdTimer = 0;
@@ -192,7 +199,7 @@ export class Hud {
       this.renderSound();
       handlers.onSound?.(this.progress.sound);
     });
-    this.hapticsBtn = el('button', 'btn-sound btn-haptics');
+    this.hapticsBtn = el('button', 'btn menu-toggle btn-haptics');
     this.hapticsBtn.type = 'button';
     // Hold 1 s and release: test pattern (fired on release, i.e. inside the gesture, for iOS).
     let hDown = 0;
@@ -222,65 +229,70 @@ export class Hud {
     });
     // Only where some haptics backend exists (Vibration API, or the iOS 17.4+ switch tick).
     const canVibrate = hapticsBackend() !== 'none';
+    // Top bar: title (+ tiny mode icons) on the left; moves, overview (big maps) and the gear menu.
+    this.modeIcons = el('span', 'mode-icons');
+    info.append(this.modeIcons);
+    this.overviewBtn = el('button', 'btn-top btn-overview', ICONS.map);
+    this.overviewBtn.type = 'button';
+    this.overviewBtn.setAttribute('aria-label', 'Map overview (O)');
+    this.overviewBtn.title = 'Map overview (O)';
+    this.overviewBtn.addEventListener('click', () => handlers.onOverview?.());
+    const gear = el('button', 'btn-top btn-menu', ICONS.gear);
+    gear.type = 'button';
+    gear.setAttribute('aria-label', 'Menu');
+    gear.title = 'Menu (Esc)';
+    gear.addEventListener('click', () => this.openMenu());
     const right = el('div', 'hud-top-right');
-    right.append(moves);
-    if (canVibrate) right.append(this.hapticsBtn);
-    right.append(this.soundBtn);
+    right.append(moves, this.overviewBtn, gear);
     top.append(info, right);
-    this.renderSound();
 
-    // ----- board + hint -----
-    this.hint = el('div', 'hint');
+    // ----- board: everything below the top bar -----
+    this.hint = el('p', 'hint menu-hint');
     this.boardWrap = el('main', 'board-wrap');
     this.canvas = el('canvas', 'board');
     this.canvas.setAttribute('aria-label', 'Game board');
     this.boardWrap.append(this.canvas);
-    // (the d-pad is appended to boardWrap once it exists, below)
-    // Board with the hint directly under it, kept together and centred in the free space.
     this.stage = el('div', 'stage');
-    this.stage.append(this.boardWrap, this.hint);
+    this.stage.append(this.boardWrap);
 
-    // ----- bottom buttons -----
-    const bottom = (this.bottom = el('footer', 'hud-bottom'));
-    this.prevBtn = button('btn-prev', ICONS.prev, 'Prev', () => handlers.onPrev());
-    const restart = button('btn-restart', ICONS.restart, 'Restart', () => handlers.onRestart());
-    const levelsBtn = button('btn-levels', ICONS.grid, 'Levels', () => this.openPicker());
-    this.nextBtn = button('btn-next', ICONS.next, 'Next', () => handlers.onNext());
-    const newBtn = button('btn-new', ICONS.dice, 'New level', () => handlers.onNewRandom());
-    this.undoBtn = button('btn-undo', ICONS.undo, 'Undo', () => handlers.onUndo?.());
+    // ----- gear menu (pauses input while open) -----
+    const closeThen = (fn: () => void) => () => {
+      this.closeMenu();
+      fn();
+    };
+    this.prevBtn = button('btn-prev', ICONS.prev, 'Previous', closeThen(() => handlers.onPrev()));
+    const restart = button('btn-restart', ICONS.restart, 'Restart', closeThen(() => handlers.onRestart()));
+    const levelsBtn = button('btn-levels', ICONS.grid, 'Levels', closeThen(() => this.openPicker()));
+    this.nextBtn = button('btn-next', ICONS.next, 'Next', closeThen(() => handlers.onNext()));
+    const newBtn = button('btn-new', ICONS.dice, 'New level', closeThen(() => handlers.onNewRandom()));
+    this.undoBtn = button('btn-undo', ICONS.undo, 'Undo', closeThen(() => handlers.onUndo?.()));
     this.undoBtn.disabled = true;
-    bottom.append(this.prevBtn, restart, this.undoBtn, levelsBtn, this.nextBtn, newBtn);
-
-    // D-pad overlay for hero levels on touch screens: tap = one step, hold = repeat.
-    this.dpad = el('div', 'dpad');
-    this.dpad.setAttribute('aria-label', 'Move');
-    for (const d of ['up', 'left', 'right', 'down'] as Dir[]) {
-      const b = el('button', `dpad-btn dpad-${d}`, ICONS.arrow);
-      b.type = 'button';
-      b.setAttribute('aria-label', `Move ${d}`);
-      let t1 = 0;
-      let t2 = 0;
-      const stop = () => {
-        window.clearTimeout(t1);
-        window.clearInterval(t2);
-        b.classList.remove('down');
-      };
-      b.addEventListener('pointerdown', (e) => {
-        e.preventDefault();
-        stop();
-        b.classList.add('down');
-        try {
-          b.setPointerCapture(e.pointerId);
-        } catch {
-          /* synthetic events */
-        }
-        handlers.onHeroMove?.(d);
-        t1 = window.setTimeout(() => (t2 = window.setInterval(() => handlers.onHeroMove?.(d), 140)), 300);
-      });
-      for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, stop);
-      b.addEventListener('contextmenu', (e) => e.preventDefault());
-      this.dpad.append(b);
-    }
+    const resume = button('btn-primary btn-resume', ICONS.next, 'Resume', () => this.closeMenu());
+    this.menu = el('div', 'overlay menu hidden');
+    this.menu.setAttribute('role', 'dialog');
+    this.menu.setAttribute('aria-label', 'Menu');
+    const card = el('div', 'card menu-card');
+    const head = el('div', 'menu-head');
+    this.menuTitle = el('h2', 'menu-title', 'Paused');
+    const x = el('button', 'btn btn-close', '&times;');
+    x.type = 'button';
+    x.setAttribute('aria-label', 'Close');
+    x.addEventListener('click', () => this.closeMenu());
+    head.append(this.menuTitle, x);
+    const actions = el('div', 'menu-actions');
+    actions.append(this.undoBtn, restart, levelsBtn);
+    const toggles = el('div', 'menu-toggles');
+    toggles.append(this.soundBtn);
+    if (canVibrate) toggles.append(this.hapticsBtn);
+    // Level navigation sits low in the menu, away from Resume, so it is hard to hit by accident.
+    const nav = el('div', 'menu-nav');
+    nav.append(this.prevBtn, this.nextBtn, newBtn);
+    card.append(head, resume, actions, toggles, nav, this.hint);
+    this.renderSound();
+    this.menu.append(card);
+    this.menu.addEventListener('click', (e) => {
+      if (e.target === this.menu) this.closeMenu();
+    });
 
     // ----- level picker -----
     this.picker = el('div', 'overlay picker hidden');
@@ -421,12 +433,17 @@ export class Hud {
     bcard.append(this.buildingText);
     this.building.append(bcard);
 
-    this.stage.append(this.dpad); // portrait: under the hint; landscape: moved into the board (placeDpad)
-    root.append(top, this.stage, bottom, this.picker, this.win, this.building);
+    root.append(top, this.stage, this.menu, this.picker, this.win, this.building);
 
     window.addEventListener(
       'keydown',
       (e) => {
+        if (this.menuOpen && e.key === 'Escape') {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          this.closeMenu();
+          return;
+        }
         if (!this.pickerOpen) return;
         if (e.key === 'Escape') {
           e.preventDefault();
@@ -439,29 +456,28 @@ export class Hud {
     this.renderDifficulty();
   }
 
-  /** CSS px height available to the board canvas in the stacked (portrait/desktop) layout. */
-  freeBoardHeight(): number {
-    const cs = getComputedStyle(this.root);
-    const inner = this.root.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
-    const gap = parseFloat(cs.rowGap) || 0;
-    let h = inner - this.top.offsetHeight - this.bottom.offsetHeight - gap * 2;
-    const stageGap = parseFloat(getComputedStyle(this.stage).rowGap) || 0;
-    if (!this.hint.classList.contains('empty')) h -= this.hint.offsetHeight + stageGap;
-    // Hero levels on touch screens: the d-pad sits below the board, so the board makes room for it.
-    if (this.dpad.parentElement === this.stage && getComputedStyle(this.dpad).display !== 'none') {
-      h -= this.dpad.offsetHeight + stageGap;
-    }
-    return Math.max(80, h);
+  // ----- gear menu -----
+  get menuOpen(): boolean {
+    return !this.menu.classList.contains('hidden');
   }
 
-  /**
-   * Put the d-pad below the board (in the stage, portrait) or, when vertical space is short
-   * (landscape phones), back over the board's corner. Called by the layout pass.
-   */
-  placeDpad(overlay: boolean): void {
-    const parent = overlay ? this.boardWrap : this.stage;
-    if (this.dpad.parentElement !== parent) parent.append(this.dpad);
-    this.dpad.classList.toggle('dpad-overlay', overlay);
+  openMenu(): void {
+    if (this.menuOpen) return;
+    this.closePicker();
+    this.menu.classList.remove('hidden');
+    this.handlers.onMenu?.(true);
+    (this.menu.querySelector('.btn-resume') as HTMLButtonElement | null)?.focus({ preventScroll: true });
+  }
+
+  closeMenu(): void {
+    if (!this.menuOpen) return;
+    this.menu.classList.add('hidden');
+    this.handlers.onMenu?.(false);
+  }
+
+  /** Big maps: show the overview button in the top bar. */
+  setBigMap(on: boolean): void {
+    this.root.classList.toggle('bigmap', on);
   }
 
   get pickerOpen(): boolean {
@@ -529,20 +545,20 @@ export class Hud {
   }
 
   private common(level: LevelDef): void {
-    // Gravity levels: a small badge leads the hint line so the player knows boxes fall here.
-    this.hint.textContent = '';
+    // The hint lives at the bottom of the menu; mode badges are tiny icons next to the title.
+    this.hint.textContent = level.hint ?? '';
+    this.hint.classList.toggle('empty', !level.hint);
+    this.modeIcons.innerHTML = '';
     if (level.hero) {
-      const pill = el('span', 'gravity-pill hero-pill', `${ICONS.hero}<span>Pusher</span>`);
-      pill.title = 'Walk the character and push the boxes (Z = undo)';
-      this.hint.append(pill);
+      const i = el('span', 'mode-icon mode-hero', ICONS.hero);
+      i.title = 'Pusher: walk the character and push the boxes';
+      this.modeIcons.append(i);
     }
     if (level.boxGravity) {
-      const pill = el('span', 'gravity-pill', `${ICONS.down}<span>Gravity</span>`);
-      pill.title = 'Boxes fall in this level';
-      this.hint.append(pill);
+      const i = el('span', 'mode-icon mode-gravity', ICONS.down);
+      i.title = 'Gravity: boxes fall';
+      this.modeIcons.append(i);
     }
-    if (level.hint) this.hint.append(document.createTextNode(level.hint));
-    this.hint.classList.toggle('empty', !level.hint && !level.boxGravity && !level.hero);
     this.root.classList.toggle('hero', !!level.hero);
     this.root.classList.toggle('gravity', !!level.boxGravity);
     this.setUndoCount(0);
@@ -583,13 +599,13 @@ export class Hud {
 
   private renderSound(): void {
     const on = this.progress.sound;
-    this.soundBtn.innerHTML = on ? ICONS.soundOn : ICONS.soundOff;
+    this.soundBtn.innerHTML = `${on ? ICONS.soundOn : ICONS.soundOff}<span>Sound</span><b>${on ? 'On' : 'Off'}</b>`;
     this.soundBtn.setAttribute('aria-pressed', String(on));
     this.soundBtn.setAttribute('aria-label', on ? 'Sound on (tap to mute)' : 'Sound off (tap to unmute)');
     this.soundBtn.title = on ? 'Mute' : 'Unmute';
     this.soundBtn.classList.toggle('off', !on);
     const h = this.progress.haptics;
-    this.hapticsBtn.innerHTML = h ? ICONS.hapticsOn : ICONS.hapticsOff;
+    this.hapticsBtn.innerHTML = `${h ? ICONS.hapticsOn : ICONS.hapticsOff}<span>Vibration</span><b>${h ? 'On' : 'Off'}</b>`;
     this.hapticsBtn.setAttribute('aria-pressed', String(h));
     this.hapticsBtn.setAttribute('aria-label', h ? 'Vibration on (tap to turn off)' : 'Vibration off (tap to turn on)');
     this.hapticsBtn.title = h ? 'Vibration off' : 'Vibration on';

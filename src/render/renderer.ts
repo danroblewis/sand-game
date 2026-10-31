@@ -86,6 +86,8 @@ export type Effect =
   | { kind: 'thaw'; t0: number; dur: number; boxId: number }
   /** Landing squash for a box that fell `fell` cells. */
   | { kind: 'land'; t0: number; dur: number; boxId: number; amp: number }
+  /** Off-screen event marker at the viewport edge (big maps). x/y in grid cells. */
+  | { kind: 'ping'; t0: number; dur: number; x: number; y: number; color: ColorId }
   /** Dust puff at the bottom edge of a landed box. */
   | { kind: 'dust'; t0: number; dur: number; sparks: Spark[] }
   /** Sparkle over a sand box whose leftover grains of `color` just dissolved. */
@@ -98,6 +100,10 @@ export interface View {
   effects: Effect[];
   /** Fraction (0..1) of the next sim step already elapsed (fixed-step accumulator / step length). */
   stepFrac: number;
+  /** Big maps: the last box the player moved (camera focus in drag levels). */
+  lastMovedBoxId?: number | null;
+  /** Big maps: pointer near a viewport edge while dragging (-1..1 per axis): camera looks ahead. */
+  dragEdge?: { x: number; y: number };
 }
 
 export function createView(): View {
@@ -282,6 +288,14 @@ function roundRectPath(x: number, y: number, w: number, h: number, r: number): P
 
 // ---------- Renderer ----------
 
+export type CameraMode = 'fit' | 'scroll' | 'rooms';
+/** Big maps: cells across the shorter screen side. */
+const CAM_CELLS_ACROSS = 8.5;
+const CAM_FOLLOW_TAU = 0.18;
+const ROOM_SNAP_MS = 250;
+const OVERVIEW_MS = 220;
+const PING_MS = 1200;
+
 interface RenderPos {
   rx: number;
   ry: number;
@@ -368,9 +382,210 @@ export class Renderer {
     const H = this.canvas.height;
     const m = Renderer.MARGIN * 2;
     const cs = Math.max(8, Math.floor(Math.min(W / (this.boardW + m), H / (this.boardH + m))));
+    this.fitCs = cs;
+    this.fitOx = Math.round((W - cs * this.boardW) / 2);
+    this.fitOy = Math.round((H - cs * this.boardH) / 2);
+    // Big-map cell size: ~8.5 cells across the shorter side (today's phone sizing).
+    this.camCs = Math.max(8, Math.floor(Math.min(W, H) / CAM_CELLS_ACROSS));
     this.cellSize = cs;
-    this.originX = Math.round((W - cs * this.boardW) / 2);
-    this.originY = Math.round((H - cs * this.boardH) / 2);
+    this.originX = this.fitOx;
+    this.originY = this.fitOy;
+  }
+
+  // ---------- Camera (big maps: LevelDef.camera 'scroll' | 'rooms') ----------
+
+  private camMode: CameraMode = 'fit';
+  private fitCs = 32;
+  private fitOx = 0;
+  private fitOy = 0;
+  private camCs = 32;
+  private camX = 0;
+  private camY = 0;
+  private camInit = false;
+  private camAnim: { t0: number; fx: number; fy: number; tx: number; ty: number } | null = null;
+  private room: { x: number; y: number } | null = null;
+  private manualFocus: { x: number; y: number; key: string } | null = null;
+  private ovOn = false;
+  private ovT = 0;
+  /** Camera viewport in grid cells this frame (for pings / overview outline). */
+  private view0 = { x: 0, y: 0, w: 0, h: 0 };
+
+  /** Set the level's camera mode (resets the camera). */
+  setCamera(mode: CameraMode | undefined): void {
+    this.camMode = mode ?? 'fit';
+    this.camInit = false;
+    this.camAnim = null;
+    this.room = null;
+    this.manualFocus = null;
+    this.ovOn = false;
+    this.ovT = 0;
+  }
+
+  /** True when the board is larger than the screen and a camera is in use. */
+  get cameraActive(): boolean {
+    return this.camMode !== 'fit' && this.fitCs < this.camCs;
+  }
+
+  get overview(): boolean {
+    return this.ovOn;
+  }
+
+  setOverview(on: boolean): void {
+    if (!this.cameraActive) on = false;
+    this.ovOn = on;
+  }
+
+  toggleOverview(): void {
+    this.setOverview(!this.ovOn);
+  }
+
+  /** Tap in the overview (CSS px): pan there and return to the normal view. */
+  overviewTap(px: number, py: number): void {
+    const g = this.pixelToGrid(px, py);
+    const x = Math.max(0, Math.min(this.boardW, g.x));
+    const y = Math.max(0, Math.min(this.boardH, g.y));
+    this.manualFocus = { x, y, key: this.focusKey };
+    this.ovOn = false;
+  }
+
+  private focusKey = '';
+
+  /** Focus point (cells) for the camera: hero, held box, last moved box, else board centre. */
+  private focusPoint(state: GameState, view: View): { x: number; y: number; key: string } {
+    if (state.hero) {
+      const p = this.heroPos;
+      return { x: (p ? p.rx : state.hero.x) + 0.5, y: (p ? p.ry : state.hero.y) + 0.5, key: `h${state.hero.x},${state.hero.y}` };
+    }
+    const id = view.dragBoxId ?? view.lastMovedBoxId ?? null;
+    const b = id !== null ? state.boxes.find((x) => x.id === id && x.state === 'active') : undefined;
+    if (b) {
+      const p = this.positions.get(b.id);
+      return { x: (p ? p.rx : b.x) + b.bw / 2, y: (p ? p.ry : b.y) + b.bh / 2, key: `b${b.id},${b.x},${b.y}` };
+    }
+    return { x: this.boardW / 2, y: this.boardH / 2, key: 'c' };
+  }
+
+  /** Per frame: choose cellSize / origin for this frame (fit, scroll, rooms, overview blend). */
+  private updateCamera(state: GameState, view: View, dt: number, now: number): void {
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    if (!this.cameraActive) {
+      this.cellSize = this.fitCs;
+      this.originX = this.fitOx;
+      this.originY = this.fitOy;
+      this.view0 = { x: 0, y: 0, w: this.boardW, h: this.boardH };
+      return;
+    }
+    const cs = this.camCs;
+    const vw = W / cs;
+    const vh = H / cs;
+    const f = this.focusPoint(state, view);
+    this.focusKey = f.key;
+    if (this.manualFocus && this.manualFocus.key !== f.key) this.manualFocus = null; // the player moved: follow again
+    let fx = this.manualFocus ? this.manualFocus.x : f.x;
+    let fy = this.manualFocus ? this.manualFocus.y : f.y;
+    if (view.dragEdge && view.dragBoxId !== null) {
+      fx += view.dragEdge.x * 2;
+      fy += view.dragEdge.y * 2;
+    }
+    const clampC = (c: number, v: number, size: number) => (size <= v ? size / 2 : Math.max(v / 2, Math.min(size - v / 2, c)));
+    let tx: number;
+    let ty: number;
+    if (this.camMode === 'rooms') {
+      const r = this.pickRoom(fx, fy, vw, vh);
+      tx = clampC(r.cx, vw, this.boardW);
+      ty = clampC(r.cy, vh, this.boardH);
+    } else {
+      tx = clampC(fx, vw, this.boardW);
+      ty = clampC(fy, vh, this.boardH);
+    }
+    if (!this.camInit) {
+      this.camX = tx;
+      this.camY = ty;
+      this.camInit = true;
+      this.camAnim = null;
+    } else if (this.camMode === 'rooms' || this.manualFocus) {
+      // snap-scroll: ~250 ms ease to the new target
+      if (!this.camAnim || this.camAnim.tx !== tx || this.camAnim.ty !== ty) {
+        if (Math.abs(tx - this.camX) > 1e-3 || Math.abs(ty - this.camY) > 1e-3) this.camAnim = { t0: now, fx: this.camX, fy: this.camY, tx, ty };
+      }
+      if (this.camAnim) {
+        const t = Math.min(1, (now - this.camAnim.t0) / ROOM_SNAP_MS);
+        const e = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        this.camX = this.camAnim.fx + (this.camAnim.tx - this.camAnim.fx) * e;
+        this.camY = this.camAnim.fy + (this.camAnim.ty - this.camAnim.fy) * e;
+        if (t >= 1) this.camAnim = null;
+      }
+    } else {
+      // soft follow
+      const k = 1 - Math.exp(-dt / CAM_FOLLOW_TAU);
+      this.camX += (tx - this.camX) * k;
+      this.camY += (ty - this.camY) * k;
+    }
+    this.view0 = { x: this.camX - vw / 2, y: this.camY - vh / 2, w: vw, h: vh };
+    // overview blend
+    const target = this.ovOn ? 1 : 0;
+    const step = dt / (OVERVIEW_MS / 1000);
+    if (target > this.ovT) this.ovT = Math.min(1, this.ovT + step);
+    else if (target < this.ovT) this.ovT = Math.max(0, this.ovT - step);
+    const e = this.ovT * this.ovT * (3 - 2 * this.ovT);
+    const ox1 = W / 2 - this.camX * cs;
+    const oy1 = H / 2 - this.camY * cs;
+    if (e <= 0) {
+      this.cellSize = cs;
+      this.originX = Math.round(ox1);
+      this.originY = Math.round(oy1);
+    } else if (e >= 1) {
+      this.cellSize = this.fitCs;
+      this.originX = this.fitOx;
+      this.originY = this.fitOy;
+    } else {
+      this.cellSize = cs + (this.fitCs - cs) * e;
+      this.originX = ox1 + (this.fitOx - ox1) * e;
+      this.originY = oy1 + (this.fitOy - oy1) * e;
+    }
+  }
+
+  /** Rooms: screen-sized windows, evenly spread (overlapping slightly, no slivers); hysteresis. */
+  private pickRoom(fx: number, fy: number, vw: number, vh: number): { cx: number; cy: number } {
+    const axis = (f: number, v: number, size: number, cur: number | undefined) => {
+      const rw = Math.max(1, Math.floor(v));
+      if (size <= rw) return { i: 0, c: size / 2 };
+      const n = Math.ceil(size / rw);
+      const start = (i: number) => Math.round((i * (size - rw)) / (n - 1));
+      if (cur !== undefined && cur < n && f >= start(cur) && f < start(cur) + rw) return { i: cur, c: start(cur) + rw / 2 };
+      let best = 0;
+      let bestD = -Infinity;
+      for (let i = 0; i < n; i++) {
+        const s0 = start(i);
+        const d = Math.min(f - s0, s0 + rw - f); // distance inside the room (negative = outside)
+        if (d > bestD) {
+          bestD = d;
+          best = i;
+        }
+      }
+      return { i: best, c: start(best) + rw / 2 };
+    };
+    const ax = axis(fx, vw, this.boardW, this.room?.x);
+    const ay = axis(fy, vh, this.boardH, this.room?.y);
+    this.room = { x: ax.i, y: ay.i };
+    return { cx: ax.c, cy: ay.c };
+  }
+
+  /** Is a grid rect visible in the canvas this frame (for culling)? */
+  private onScreen(x: number, y: number, w: number, h: number): boolean {
+    const cs = this.cellSize;
+    const m = cs; // one cell of slack (glows, squash, effects)
+    const sx = this.originX + x * cs;
+    const sy = this.originY + y * cs;
+    return sx + w * cs > -m && sy + h * cs > -m && sx < this.canvas.width + m && sy < this.canvas.height + m;
+  }
+
+  /** Grid point outside the camera viewport (pings)? */
+  private offView(x: number, y: number): boolean {
+    if (!this.cameraActive || this.ovOn) return false;
+    const v = this.view0;
+    return x < v.x || y < v.y || x > v.x + v.w || y > v.y + v.h;
   }
 
   /** Forget animated positions (call on level load so boxes snap into place). */
@@ -439,6 +654,7 @@ export class Renderer {
     }
     const dt = this.lastTime ? Math.min(0.1, (now - this.lastTime) / 1000) : 0;
     this.lastTime = now;
+    this.updateCamera(state, view, dt, now);
 
     const ctx = this.ctx;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -446,7 +662,7 @@ export class Renderer {
     ctx.imageSmoothingEnabled = false;
 
     this.drawBoard();
-    for (const sb of state.sandBoxes) this.drawSandBox(sb.x, sb.y, sb.w, sb.h, sb.region);
+    for (const sb of state.sandBoxes) if (this.onScreen(sb.x, sb.y, sb.w, sb.h)) this.drawSandBox(sb.x, sb.y, sb.w, sb.h, sb.region);
     // Belt timing: `phase` is set by the core when the step ran; add the elapsed part of the next
     // step so riders (and chevrons) move every frame and reach exactly 1 cell at the belt step.
     const convs = state.conveyors ?? [];
@@ -539,7 +755,7 @@ export class Renderer {
       if (b.state !== 'active' || grouped.has(b.id)) continue;
       if (b.id === view.dragBoxId) dragBox = b;
       else if (b.id === view.selectedBoxId) selBox = b;
-      else this.drawBox(b, view, now);
+      else if (this.onScreen(b.x - 1, b.y - 1, b.bw + 2, b.bh + 2)) this.drawBox(b, view, now);
     }
     for (const g of groups) this.drawGroup(g, view, now);
     if (selBox) this.drawBox(selBox, view, now);
@@ -547,6 +763,7 @@ export class Renderer {
     if (state.hero) this.drawHero(state, view, now, dt, heroWillFall(state, falls) ? fallPhase : -1, fallI);
 
     this.drawEffects(view, now);
+    this.drawViewportOutline();
   }
 
   /**
@@ -554,6 +771,31 @@ export class Renderer {
    * delegates the rest to `effectForEvent`. Also slows position lerps for boxes a belt carries.
    */
   effectsForEvent(ev: GameEvent, state: GameState, now: number): Effect[] {
+    const out = this.effectsForEventInner(ev, state, now);
+    // Big maps: a ping at the screen edge for things that happen out of view.
+    if (this.cameraActive && !this.ovOn) {
+      const at = (x: number, y: number, color: ColorId) => {
+        if (this.offView(x, y)) out.push({ kind: 'ping', t0: now, dur: PING_MS, x, y, color });
+      };
+      if (ev.type === 'boxCompleted') {
+        let mx = 0;
+        let my = 0;
+        for (const c of ev.cells) {
+          mx += c.x + 0.5;
+          my += c.y + 0.5;
+        }
+        at(ev.x + mx / ev.cells.length, ev.y + my / ev.cells.length, ev.color);
+      } else if (ev.type === 'boxUnfrozen' || (ev.type === 'boxLanded' && ev.fell >= 2)) {
+        const b = state.boxes.find((x) => x.id === ev.boxId);
+        if (b) at(b.x + b.bw / 2, b.y + b.bh / 2, ev.type === 'boxUnfrozen' ? 11 : b.color);
+      } else if (ev.type === 'debrisDissolved') {
+        for (const fx of out) if (fx.kind === 'debris') at(fx.x + fx.w / 2, fx.y + fx.h / 2, ev.color);
+      }
+    }
+    return out;
+  }
+
+  private effectsForEventInner(ev: GameEvent, state: GameState, now: number): Effect[] {
     if (ev.type === 'conveyed') {
       this.beltActiveAt.set(ev.conveyorId, now);
       for (const id of ev.boxIds) {
@@ -792,7 +1034,9 @@ export class Renderer {
     const falling = fallPhase >= 0;
     const tx = h.x;
     const ty = h.y + (falling ? fallPhase : 0);
-    const speed = falling ? 1.6 * (60 / fallI) : Math.max(HERO_WALK_SPEED, p.carry);
+    // Walks: ~90 ms per cell; when a fast tap-to-walk gets ahead, glide faster (never jump).
+    const lag = Math.abs(tx - p.rx) + Math.abs(h.y - p.ry);
+    const speed = falling ? 1.6 * (60 / fallI) : Math.max(HERO_WALK_SPEED, p.carry, lag > 1 ? HERO_WALK_SPEED * 2 : 0);
     if (falling) p.carry = speed;
     const step = speed * dt;
     const move = (cur: number, tgt: number) => (Math.abs(tgt - cur) <= step ? tgt : cur + Math.sign(tgt - cur) * step);
@@ -1087,7 +1331,7 @@ export class Renderer {
       const tx = px + (rect ? mx : best.x + 0.5) * cs;
       const ty = py + (rect ? my : best.y + 0.5) * cs;
       ctx.fillStyle = ICE_TEXT;
-      ctx.font = `800 ${Math.round(cs * 0.56)}px ui-rounded, "SF Pro Rounded", system-ui, sans-serif`;
+      ctx.font = `800 ${Math.round(Math.max(cs * 0.56, 12 * this.dpr))}px ui-rounded, "SF Pro Rounded", system-ui, sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(String(b.frozen), tx, ty + cs * 0.03);
@@ -1292,6 +1536,60 @@ export class Renderer {
     }
   }
 
+  /** Marker at the screen edge pointing to an off-screen event. */
+  private drawPing(e: Extract<Effect, { kind: 'ping' }>, age: number): void {
+    const ctx = this.ctx;
+    const cs = this.cellSize;
+    const sx = this.originX + e.x * cs;
+    const sy = this.originY + e.y * cs;
+    const W = this.canvas.width;
+    const H = this.canvas.height;
+    if (sx >= 0 && sy >= 0 && sx <= W && sy <= H) return; // in view now
+    const m = 22 * this.dpr;
+    const px = Math.max(m, Math.min(W - m, sx));
+    const py = Math.max(m, Math.min(H - m, sy));
+    const a = Math.atan2(sy - py, sx - px);
+    const t = age / e.dur;
+    const r = 9 * this.dpr * (1 + 0.25 * Math.sin(Math.min(1, t * 3) * Math.PI));
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, 1 - t);
+    ctx.translate(px, py);
+    ctx.fillStyle = colorHex(e.color);
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = Math.max(1.5, 1.5 * this.dpr);
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.rotate(a);
+    ctx.beginPath();
+    ctx.moveTo(r + 9 * this.dpr, 0);
+    ctx.lineTo(r + 2 * this.dpr, -5 * this.dpr);
+    ctx.lineTo(r + 2 * this.dpr, 5 * this.dpr);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /** Overview: outline of the normal camera viewport. */
+  private drawViewportOutline(): void {
+    if (this.ovT <= 0 || !this.cameraActive) return;
+    const ctx = this.ctx;
+    const cs = this.cellSize;
+    const v = this.view0;
+    const x0 = Math.max(0, v.x);
+    const y0 = Math.max(0, v.y);
+    const x1 = Math.min(this.boardW, v.x + v.w);
+    const y1 = Math.min(this.boardH, v.y + v.h);
+    ctx.save();
+    ctx.globalAlpha = this.ovT;
+    ctx.strokeStyle = '#f5c84c';
+    ctx.lineWidth = Math.max(2, 2 * this.dpr);
+    ctx.setLineDash([6 * this.dpr, 4 * this.dpr]);
+    ctx.strokeRect(this.originX + x0 * cs, this.originY + y0 * cs, (x1 - x0) * cs, (y1 - y0) * cs);
+    ctx.restore();
+  }
+
   private drawDebris(e: Extract<Effect, { kind: 'debris' }>, age: number): void {
     const ctx = this.ctx;
     const cs = this.cellSize;
@@ -1328,6 +1626,10 @@ export class Renderer {
       effects[w++] = e;
       if (e.kind === 'debris') {
         this.drawDebris(e, age);
+        continue;
+      }
+      if (e.kind === 'ping') {
+        this.drawPing(e, age);
         continue;
       }
       if (e.kind === 'dust') {

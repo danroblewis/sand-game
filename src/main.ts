@@ -3,7 +3,7 @@ import type { GameState, LevelDef } from './core/types';
 import { createGame, moveBoxToward, stepGame, tryMoveBox } from './core';
 import { SIM_SEED, generateDailySeed, generateLevel, generateLevelWithStats } from './levels/generate';
 import { LEVELS } from './levels';
-import { Renderer, createView } from './render/renderer';
+import { Renderer, createView, type CameraMode } from './render/renderer';
 import { attachPointer } from './input/pointer';
 import { attachKeyboard, fixSelection } from './input/keyboard';
 import { Hud } from './ui/hud';
@@ -39,6 +39,13 @@ const hud = new Hud(app, {
   onUndo: () => undo(),
   onSound: (on) => sfx.setEnabled(on),
   onSoundDiag: () => toggleAudioDiag(),
+  onOverview: () => toggleOverview(),
+  onMenu: (open) => {
+    if (open) {
+      heroInput?.cancel();
+      pointerCtl?.cancel();
+    }
+  },
   onHaptics: (on) => haptics.setEnabled(on),
   onHapticsTest: () => haptics.test(),
   onHeroMove: (d) => heroKey(d),
@@ -160,7 +167,15 @@ function undo(): void {
 }
 
 /** Start (or restart) playing a level definition. */
+/** Camera per level ('fit' unless the level asks for a big-map camera). */
+function applyCamera(def: LevelDef): void {
+  renderer.setCamera((def as LevelDef & { camera?: CameraMode }).camera);
+  view.lastMovedBoxId = null;
+  view.dragEdge = undefined;
+}
+
 function startLevel(def: LevelDef): void {
+  applyCamera(def);
   undoStack = [];
   heroInput?.cancel();
   currentLevel = def;
@@ -373,19 +388,86 @@ function drainEvents(now: number): void {
   evs.length = 0;
 }
 
-const blocked = () => hud.pickerOpen || hud.busy;
-attachPointer({ canvas: hud.canvas, renderer, getState: () => state, view, isBlocked: blocked });
+const blocked = () => hud.pickerOpen || hud.busy || hud.menuOpen;
+const pointerCtl = attachPointer({ canvas: hud.canvas, renderer, getState: () => state, view, isBlocked: blocked });
+
+// ---------- Big maps: overview (pinch / O / map button) and overview taps ----------
+// Capture-phase on the canvas: runs before the drag / hero handlers and can swallow the event.
+{
+  const touches = new Map<number, { x: number; y: number }>();
+  let pinchD0 = 0;
+  let pinched = false;
+  let ovTap: { id: number; x: number; y: number } | null = null;
+  const c = hud.canvas;
+  const dist = () => {
+    const [a, b] = [...touches.values()];
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
+  c.addEventListener(
+    'pointerdown',
+    (e) => {
+      if (e.pointerType === 'touch') touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (touches.size === 2 && renderer.cameraActive) {
+        pinchD0 = dist();
+        pinched = true;
+        pointerCtl.cancel();
+        heroInput.cancel();
+        e.stopImmediatePropagation();
+        return;
+      }
+      if (renderer.overview && !blocked()) {
+        // overview: taps navigate only (no drags, no walking)
+        ovTap = { id: e.pointerId, x: e.clientX, y: e.clientY };
+        e.stopImmediatePropagation();
+      }
+    },
+    { capture: true },
+  );
+  c.addEventListener(
+    'pointermove',
+    (e) => {
+      if (touches.has(e.pointerId)) touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (touches.size === 2 && pinchD0 > 0) {
+        const r = dist() / pinchD0;
+        if (r < 0.75 && !renderer.overview) renderer.setOverview(true); // fingers together: zoom out
+        if (r > 1.33 && renderer.overview) renderer.setOverview(false); // spread: back in
+        e.stopImmediatePropagation();
+      } else if (ovTap) e.stopImmediatePropagation();
+    },
+    { capture: true },
+  );
+  const up = (e: PointerEvent) => {
+    touches.delete(e.pointerId);
+    if (touches.size < 2) pinchD0 = 0;
+    if (pinched) {
+      if (touches.size === 0) pinched = false;
+      e.stopImmediatePropagation(); // the pinch's fingers never tap / walk / drop
+      return;
+    }
+    if (ovTap && e.pointerId === ovTap.id) {
+      const r = c.getBoundingClientRect();
+      if (e.type === 'pointerup') renderer.overviewTap(ovTap.x - r.left, ovTap.y - r.top);
+      ovTap = null;
+      e.stopImmediatePropagation();
+    }
+  };
+  c.addEventListener('pointerup', up, { capture: true });
+  c.addEventListener('pointercancel', up, { capture: true });
+}
+function toggleOverview(): void {
+  if (renderer.cameraActive) renderer.toggleOverview();
+}
 attachKeyboard({
   getState: () => state,
   view,
   isBlocked: blocked,
-  actions: { restart, next, prev, isRandom: () => mode.kind === 'random', heroMove: heroKey, undo },
+  actions: { restart, next, prev, isRandom: () => mode.kind === 'random', heroMove: heroKey, undo, overview: toggleOverview, menu: () => hud.openMenu() },
 });
 const heroInput: HeroInput = new HeroInput({ canvas: hud.canvas, renderer, getState: () => state, step: heroStep, isBlocked: blocked });
 
 // ---------- Layout ----------
 // Side-by-side HUD for short landscape screens (phones); must match the media query in style.css.
-const landscapeMq = window.matchMedia('(orientation: landscape) and (max-height: 560px)');
+const landscapeMq = window.matchMedia('(orientation: landscape)');
 
 /** Size the app to the visual viewport and the board to the free space left by the HUD. */
 function layout(): void {
@@ -393,13 +475,8 @@ function layout(): void {
   const h = Math.round(vv ? vv.height : window.innerHeight);
   document.documentElement.style.setProperty('--app-h', `${h}px`);
   if (state) renderer.setBoardSize(state.width, state.height);
-  const wrap = hud.boardWrap;
-  hud.placeDpad(landscapeMq.matches);
-  if (landscapeMq.matches) {
-    wrap.style.height = '';
-  } else {
-    wrap.style.height = `${renderer.fitHeight(wrap.clientWidth, hud.freeBoardHeight())}px`;
-  }
+  // The board fills everything below the top bar; the renderer fits / scrolls inside it.
+  hud.boardWrap.style.height = '';
   renderer.resize();
 }
 
@@ -470,6 +547,8 @@ function frame(now: number): void {
     sfx.update(dt / 1000, flowRate);
     haptics.update(dt / 1000, flowRate, now);
     releaseGoneHeldBox();
+    pointerCtl.tick();
+    hud.setBigMap(renderer.cameraActive);
     fixSelection(state, view);
     renderer.render(state, view, now);
     hud.setMoves(state.moves);
@@ -525,6 +604,7 @@ window.__game = {
     undoStack = [];
     heroInput.cancel();
     hud.showLevelChrome(def); // badges / undo button only; progress is untouched
+    applyCamera(def);
     state = createGame(def, newSeed());
     view.selectedBoxId = view.dragBoxId = view.hoverBoxId = null;
     view.effects.length = 0;
