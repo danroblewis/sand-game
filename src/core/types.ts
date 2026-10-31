@@ -153,6 +153,9 @@ export interface Box {
   pushDir: Dir | null;
   /** Cells fallen so far in the current fall under box gravity (0 when resting). */
   falling: number;
+  /** Direction this box is sliding in after a kick, or null. It moves one cell per KICK_INTERVAL
+   *  steps until blocked (or until it falls under gravity). */
+  sliding: Dir | null;
   /** Fine grid region sized bw*N by bh*N with a mask built from `cells`. */
   region: SandRegion;
   state: BoxState;
@@ -196,6 +199,8 @@ export type GameEvent =
   | { type: 'heroMoved'; x: number; y: number; dir: Dir; climbed: boolean }
   | { type: 'heroPushed'; boxId: number; dir: Dir }
   | { type: 'heroLanded'; fell: number }
+  | { type: 'heroKicked'; boxId: number; dir: Dir }
+  | { type: 'boxSlid'; boxId: number; dir: Dir; cells: number }
   | { type: 'boxUnfrozen'; boxId: number }
   | { type: 'boxMoved'; boxId: number; x: number; y: number }
   | { type: 'transfer'; count: number }

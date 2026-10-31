@@ -77,7 +77,7 @@ function planBelts(
 ): { boxes: Box[][]; hero: { conv: ConveyorState; pushed: Box | null } | null } {
   const movers: Mover[] = [];
   for (const b of state.boxes) {
-    if (b.state !== 'active' || b.frozen > 0 || b.id === state.heldBoxId) continue;
+    if (b.state !== 'active' || b.frozen > 0 || b.id === state.heldBoxId || b.sliding !== null) continue;
     const f = firstCell(b);
     const at = beltAt(state, f.x, f.y);
     if (at && steps(at.conv, tick)) movers.push({ box: b, conv: at.conv, k: at.k });

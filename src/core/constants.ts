@@ -72,3 +72,6 @@ export const CONVEYOR_INTERVAL = 100;
 
 /** Box gravity (per level): unsupported boxes fall one cell every this many steps. */
 export const BOX_FALL_INTERVAL = 4;
+
+/** A kicked box slides one cell every this many steps. */
+export const KICK_INTERVAL = 2;

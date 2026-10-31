@@ -281,6 +281,15 @@ Chapter 1 does not). Rules:
   above the hero is free, steps the hero up onto it (`heroMoved` with `climbed: true`). Up/down
   inputs do nothing in gravity hero levels (no jumping, no digging). A box pushed off a ledge falls.
   Boxes never fall into the hero's cell (the hero holds them up, like the held box did).
+- **Kick:** `kickBox(state, dir)`: if the cell in `dir` from the hero holds an active, unfrozen box
+  that can move one cell in `dir`, the box starts **sliding** (`box.sliding = dir`) and the hero stays
+  put (facing updates). A sliding box moves one cell per `KICK_INTERVAL` (2) steps while `canPlace`
+  allows; when blocked it stops (`boxSlid {boxId, dir, cells}`), under gravity it stops sliding as
+  soon as it starts falling (the fall then proceeds normally). Sliding boxes are ordinary obstacles.
+  A kick separates the box from any group it was in. A kick counts as one move and emits
+  `heroKicked`. Touch input: swipe and hold; release < 2 s = normal move, >= 2 s = kick, with a
+  charge animation from 1 s to 2 s and an armed state after. Keyboard: hold an arrow 2 s, or
+  Shift+arrow. Solutions write a kick as `K` followed by the direction letter (e.g. `RRKL`).
 - **Undo:** `snapshotState(state)` / `restoreState(state, snap)` in core (deep copies of all regions
   and box/hero positions, dockings invalidated on restore). The app keeps a stack of snapshots, one
   per hero move, capped at 200; Z or the Undo button restores the previous one. Undo exists only in

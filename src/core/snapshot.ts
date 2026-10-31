@@ -4,6 +4,7 @@ import type { BoxState, Dir, GameState, HeroState } from './types';
 import { touchRegion } from './sand';
 import { gameSpace, invalidateSpace } from './transfer';
 import { debrisLoad, debrisSave } from './game';
+import { slideLoad, slideSave } from './hero';
 
 export interface GameSnapshot {
   /** Per region (sand boxes, then boxes): its cells and count. */
@@ -13,6 +14,8 @@ export interface GameSnapshot {
   boxNums: Int32Array;
   boxStates: BoxState[];
   pushDirs: (Dir | null)[];
+  slidings: (Dir | null)[];
+  slideCounts: [number, number][];
   hero: HeroState | null;
   conveyorPhase: Float64Array;
   heldBoxId: number | null;
@@ -42,6 +45,8 @@ export function snapshotState(state: GameState): GameSnapshot {
     boxNums,
     boxStates: state.boxes.map((b) => b.state),
     pushDirs: state.boxes.map((b) => b.pushDir),
+    slidings: state.boxes.map((b) => b.sliding),
+    slideCounts: slideSave(state),
     hero: state.hero ? { ...state.hero } : null,
     conveyorPhase: Float64Array.from(state.conveyors.map((c) => c.phase)),
     heldBoxId: state.heldBoxId,
@@ -71,6 +76,7 @@ export function restoreState(state: GameState, snap: GameSnapshot): void {
     b.falling = snap.boxNums[4 * i + 3];
     b.state = snap.boxStates[i];
     b.pushDir = snap.pushDirs[i];
+    b.sliding = snap.slidings[i];
   });
   state.hero = snap.hero ? { ...snap.hero } : null;
   state.conveyors.forEach((c, i) => (c.phase = snap.conveyorPhase[i]));
@@ -81,6 +87,7 @@ export function restoreState(state: GameState, snap: GameSnapshot): void {
   state.moves = snap.moves;
   state.won = snap.won;
   debrisLoad(state, snap.debris);
+  slideLoad(state, snap.slideCounts);
   invalidateSpace(state);
   gameSpace(state).credit.set(snap.credit);
 }

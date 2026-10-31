@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   BOX_FALL_INTERVAL,
+  KICK_INTERVAL,
+  kickBox,
+  slidePlan,
   OCC_HERO,
   buildOccupancy,
   canPlace,
@@ -218,6 +221,109 @@ describe('hero rides belts', () => {
     const ev = run(p, 1);
     expect([p.boxes[0].x, pos(p)]).toEqual([3, [2, 1]]);
     expect(ev.some((e) => e.type === 'heroPushed')).toBe(true);
+  });
+});
+
+describe('kick', () => {
+  const row = (p: Partial<LevelDef>, at = { x: 0, y: 0 }) => hero({ width: 7, height: 3, ...p }, at);
+
+  it('a kicked box slides to a wall and stops, with the right cell count and events', () => {
+    const s = createGame(row({ boxes: [{ shape: '1x1', x: 1, y: 0, color: 1 }], walls: [{ x: 5, y: 0 }] }));
+    s.hero!.facing = 'left';
+    expect(kickBox(s, 'right')).toBe(true);
+    expect(s.boxes[0].sliding).toBe('right');
+    expect(pos(s)).toEqual([0, 0]); // the hero stays
+    expect(s.hero!.facing).toBe('right');
+    expect(s.moves).toBe(1);
+    expect(s.events).toContainEqual({ type: 'heroKicked', boxId: 0, dir: 'right' });
+    expect(slidePlan(s)).toEqual(new Map([[0, 'right']]));
+    const ev = run(s, 5 * KICK_INTERVAL);
+    expect(s.boxes[0].x).toBe(4);
+    expect(s.boxes[0].sliding).toBe(null);
+    expect(ev.filter((e) => e.type === 'boxMoved').length).toBe(3);
+    expect(ev.filter((e) => e.type === 'boxSlid')).toEqual([{ type: 'boxSlid', boxId: 0, dir: 'right', cells: 3 }]);
+    expect(slidePlan(s).size).toBe(0);
+    expect(kickBox(s, 'right')).toBe(false); // not adjacent any more
+  });
+
+  it('stops at another box; the hero cannot push a sliding box; it can be kicked again once stopped', () => {
+    const s = createGame(row({ boxes: [{ shape: '1x1', x: 1, y: 0, color: 1 }, { shape: '1x1', x: 4, y: 0, color: 2 }] }));
+    expect(kickBox(s, 'right')).toBe(true);
+    expect(moveHero(s, 'right')).toBe(false); // box 0 is sliding: blocked
+    run(s, 4 * KICK_INTERVAL);
+    expect(s.boxes.map((b) => b.x)).toEqual([3, 4]);
+    expect(moveHero(s, 'right')).toBe(true);
+    expect(moveHero(s, 'right')).toBe(true); // hero at (2,0) next to box 0
+    expect(kickBox(s, 'right')).toBe(false); // box 0 cannot move (box 1 behind it)
+    expect(kickBox(s, 'up')).toBe(false); // nothing there
+  });
+
+  it('stops at a sand box side and docks: sand flows on the next steps', () => {
+    const s = createGame(row({
+      sandBoxes: [{ x: 5, y: 0, w: 1, h: 1, layers: [{ color: 1, amount: 1 }] }],
+      boxes: [{ shape: '1x1', x: 1, y: 0, color: 1 }],
+    }), 3);
+    expect(kickBox(s, 'right')).toBe(true);
+    run(s, 4 * KICK_INTERVAL);
+    expect([s.boxes[0].x, s.boxes[0].sliding]).toEqual([4, null]);
+    run(s, 20);
+    expect(s.boxes[0].region.count).toBeGreaterThan(0);
+  });
+
+  it('kicking a frozen box fails', () => {
+    const s = createGame(row({ boxes: [{ shape: '1x1', x: 1, y: 0, color: 1, frozen: 1 }] }));
+    expect(kickBox(s, 'right')).toBe(false);
+    expect(s.moves).toBe(0);
+  });
+
+  it('under gravity a kicked box slides off a ledge, stops sliding, falls and lands', () => {
+    const s = createGame({
+      ...hero({ width: 7, height: 6, walls: [{ x: 0, y: 3 }, { x: 1, y: 3 }, { x: 2, y: 3 }], boxes: [{ shape: '1x1', x: 1, y: 2, color: 1 }] }, { x: 0, y: 2 }),
+      boxGravity: true,
+    });
+    expect(kickBox(s, 'right')).toBe(true);
+    expect(kickBox(s, 'up')).toBe(false); // no vertical kicks with gravity
+    const ev = run(s, 12 * BOX_FALL_INTERVAL);
+    const slid = ev.find((e) => e.type === 'boxSlid');
+    expect(slid).toEqual({ type: 'boxSlid', boxId: 0, dir: 'right', cells: 2 }); // (1,2)→(3,2), off the ledge
+    expect([s.boxes[0].x, s.boxes[0].y]).toEqual([3, 5]); // fell to the floor
+    expect(ev.filter((e) => e.type === 'boxLanded')).toEqual([{ type: 'boxLanded', boxId: 0, fell: 3 }]);
+    expect(ev.indexOf(slid!)).toBeLessThan(ev.findIndex((e) => e.type === 'boxLanded'));
+  });
+
+  it('kicking a group piece away separates it: the full piece pops alone', () => {
+    const s = createGame(row({
+      boxes: [
+        { shape: '1x1', x: 1, y: 1, color: 1 }, // full, underneath (so its sand can't fall into the partner)
+        { shape: '1x1', x: 1, y: 0, color: 1 }, // empty partner on top
+      ],
+    }, { x: 0, y: 1 }));
+    const r = s.boxes[0].region;
+    r.cells.fill(1);
+    r.count = r.capacity;
+    run(s, 2);
+    expect(s.boxes[0].state).toBe('active'); // held back by its empty partner
+    expect(kickBox(s, 'right')).toBe(true);
+    run(s, 2 * KICK_INTERVAL);
+    expect(s.boxes[0].state).toBe('removed');
+    expect(s.boxes[1].state).toBe('active');
+  });
+
+  it('undo restores a mid-slide state exactly; determinism holds', () => {
+    const lv = row({ boxes: [{ shape: '1x1', x: 1, y: 0, color: 1 }], walls: [{ x: 6, y: 0 }] });
+    const a = createGame(lv, 2);
+    kickBox(a, 'right');
+    run(a, 3);
+    const snap = snapshotState(a);
+    const key = (s: GameState) => JSON.stringify([s.boxes.map((b) => [b.x, b.y, b.sliding]), s.hero, s.tick, s.rng.seed, s.moves]);
+    const at = key(a);
+    const evA = run(a, 20).filter((e) => e.type === 'boxSlid');
+    restoreState(a, snap);
+    expect(key(a)).toBe(at);
+    expect(a.boxes[0].sliding).toBe('right');
+    const evB = run(a, 20).filter((e) => e.type === 'boxSlid');
+    expect(evB).toEqual(evA); // same stop, same cell count (the counter is part of the snapshot)
+    expect(evA).toEqual([{ type: 'boxSlid', boxId: 0, dir: 'right', cells: 4 }]);
   });
 });
 

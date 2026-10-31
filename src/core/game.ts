@@ -8,6 +8,7 @@ import { applyPull, gameSpace } from './transfer';
 import { applyConveyors, buildConveyor } from './conveyors';
 import { connectedGroups } from './grid';
 import { applyBoxGravity } from './gravity';
+import { applySliding } from './hero';
 import { COMPLETION_SLACK, DISSOLVE_STEPS } from './constants';
 import { nextFloat } from './rng';
 import { touchRegion } from './sand';
@@ -42,6 +43,7 @@ export function createGame(level: LevelDef, seed = 1): GameState {
       state: 'active',
       pushDir: null,
       falling: 0,
+      sliding: null,
     };
   });
   return {
@@ -77,6 +79,9 @@ export function stepGame(state: GameState): void {
   sweepSpace(sp, state.rng, state.tick);
   endStep(sp);
   if (sp.crossings > 0) state.events.push({ type: 'transfer', count: sp.crossings });
+  // Kicked boxes slide before belts and gravity: a box that slides off a ledge stops sliding on
+  // that step and the gravity pass then drops it normally.
+  applySliding(state);
   applyConveyors(state); // box moves change the dockings: the space rebuilds next step
   applyBoxGravity(state);
   checkCompletions(state);
