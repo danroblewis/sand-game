@@ -58,7 +58,7 @@ export function createGame(level: LevelDef, seed = 1): GameState {
     conveyors: (level.conveyors ?? []).map(buildConveyor),
     heldBoxId: null,
     boxGravity: level.boxGravity ?? false,
-    hero: level.hero ? { x: level.hero.x, y: level.hero.y, facing: 'right', falling: 0 } : null,
+    hero: level.hero ? { x: level.hero.x, y: level.hero.y, facing: 'right', falling: 0, sliding: null } : null,
     walls: (level.walls ?? []).map((w) => ({ x: w.x, y: w.y })),
     completedCount: 0,
     moves: 0,

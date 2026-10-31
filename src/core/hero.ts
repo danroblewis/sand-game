@@ -54,7 +54,7 @@ function canPush(state: GameState, box: Box, x: number, y: number): boolean {
  */
 export function moveHero(state: GameState, dir: Dir): boolean {
   const h = state.hero;
-  if (!h) return false;
+  if (!h || h.sliding !== null) return false; // no input while thrown
   const grav = state.boxGravity;
   if (grav && (dir === 'up' || dir === 'down')) return false;
   if (dir === 'left' || dir === 'right') h.facing = dir;
@@ -130,18 +130,31 @@ export function slideLoad(state: GameState, saved: [number, number][]): void {
  * move one cell in `dir`, it starts sliding (`box.sliding = dir`, one cell per KICK_INTERVAL steps
  * until blocked); the hero stays put and faces `dir`. Counts as a move; emits `heroKicked`. In
  * gravity levels only sideways kicks, and only while the hero stands on something. A driven box
- * resists a kick against its force; a kick along its force is a normal push (moveHero).
+ * resists a kick against its force; a kick along its force is a normal push (moveHero). With no
+ * box ahead and a free cell, the hero is thrown instead (`hero.sliding = dir`, `heroThrown`, one
+ * move). No kicks or moves while the hero is sliding.
  */
+export const kick = (state: GameState, dir: Dir): boolean => kickBox(state, dir);
+
 export function kickBox(state: GameState, dir: Dir): boolean {
   const h = state.hero;
-  if (!h) return false;
+  if (!h || h.sliding !== null) return false;
   const grav = state.boxGravity;
   if (grav && (dir === 'up' || dir === 'down')) return false;
   if (dir === 'left' || dir === 'right') h.facing = dir;
   if (grav && !heroSupported(state)) return false;
   const [dx, dy] = VEC[dir];
   const box = boxAt(state, h.x + dx, h.y + dy);
-  if (!box || box.frozen > 0 || box.sliding !== null) return false;
+  if (!box) {
+    // No box ahead: a free cell throws the hero instead.
+    if (!heroCellFree(state, h.x + dx, h.y + dy)) return false;
+    h.sliding = dir;
+    slidOf(state).set(-1, 0);
+    state.moves++;
+    state.events.push({ type: 'heroThrown', dir });
+    return true;
+  }
+  if (box.frozen > 0 || box.sliding !== null) return false;
   // Driven boxes: a kick against the force is resisted; a kick along it is just a push.
   if (box.force !== null && box.force === OPP[dir]) return false;
   if (box.force === dir) return moveHero(state, dir);
@@ -197,6 +210,7 @@ export function slidePlan(state: GameState): Map<number, Dir> {
  */
 export function applySliding(state: GameState): void {
   if (state.tick % KICK_INTERVAL !== 0) return;
+  heroSlideStep(state);
   if (!state.boxes.some((b) => b.sliding !== null)) return;
   const counts = slidOf(state);
   const moved = new Set(planSlide(state, true));
@@ -222,4 +236,37 @@ export function applySliding(state: GameState): void {
     shakeBox(state, b.id, dx, dy);
     if (state.boxGravity && canPlace(state, b, b.x, b.y + 1)) stop(b);
   }
+}
+
+/** Will the thrown hero move on the next slide step? (its direction, or null; for rendering) */
+export function heroSlidePlan(state: GameState): Dir | null {
+  const h = state.hero;
+  if (!h || h.sliding === null) return null;
+  const [dx, dy] = VEC[h.sliding];
+  return heroCellFree(state, h.x + dx, h.y + dy) ? h.sliding : null;
+}
+
+/** The thrown hero's slide step (before the boxes'): one cell while the next cell is free
+ *  (`heroMoved`); stops with `heroSlid {cells}` when blocked, or under gravity as soon as it is
+ *  unsupported after a step (it then falls normally). It never pushes. */
+function heroSlideStep(state: GameState): void {
+  const h = state.hero;
+  if (!h || h.sliding === null) return;
+  const counts = slidOf(state);
+  const dir = h.sliding;
+  const stop = () => {
+    state.events.push({ type: 'heroSlid', dir, cells: counts.get(-1) ?? 0 });
+    counts.delete(-1);
+    h.sliding = null;
+  };
+  const [dx, dy] = VEC[dir];
+  if (!heroCellFree(state, h.x + dx, h.y + dy)) {
+    stop();
+    return;
+  }
+  h.x += dx;
+  h.y += dy;
+  counts.set(-1, (counts.get(-1) ?? 0) + 1);
+  state.events.push({ type: 'heroMoved', x: h.x, y: h.y, dir, climbed: false });
+  if (state.boxGravity && heroCellFree(state, h.x, h.y + 1)) stop();
 }

@@ -57,7 +57,7 @@ interface Mover {
 /** The hero can ride: on a belt, not mid-fall (and supported in gravity levels). */
 function heroRider(state: GameState): { conv: ConveyorState; k: number } | null {
   const h = state.hero;
-  if (!h || h.falling > 0 || !heroSupported(state)) return null;
+  if (!h || h.falling > 0 || h.sliding !== null || !heroSupported(state)) return null;
   return beltAt(state, h.x, h.y);
 }
 

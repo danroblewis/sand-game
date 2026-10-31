@@ -197,6 +197,8 @@ export interface HeroState {
   facing: Dir;
   /** Cells fallen in the current fall under box gravity (0 when standing). */
   falling: number;
+  /** Direction the hero is sliding in after being thrown (a kick with no box ahead), or null. */
+  sliding: Dir | null;
 }
 
 export type GameEvent =
@@ -207,6 +209,8 @@ export type GameEvent =
   | { type: 'heroPushed'; boxId: number; dir: Dir }
   | { type: 'heroLanded'; fell: number }
   | { type: 'heroKicked'; boxId: number; dir: Dir }
+  | { type: 'heroThrown'; dir: Dir }
+  | { type: 'heroSlid'; dir: Dir; cells: number }
   | { type: 'boxSlid'; boxId: number; dir: Dir; cells: number }
   | { type: 'forcePushed'; boxId: number; boxIds: number[]; dir: Dir }
   | { type: 'boxUnfrozen'; boxId: number }

@@ -287,9 +287,12 @@ Chapter 1 does not). Rules:
   allows; when blocked it stops (`boxSlid {boxId, dir, cells}`), under gravity it stops sliding as
   soon as it starts falling (the fall then proceeds normally). Sliding boxes are ordinary obstacles.
   A kick separates the box from any group it was in. A kick counts as one move and emits
-  `heroKicked`. Touch input: swipe and hold; release < 2 s = normal move, >= 2 s = kick, with a
-  charge animation from 1 s to 2 s and an armed state after. Keyboard: hold an arrow 2 s, or
-  Shift+arrow. Solutions write a kick as `K` followed by the direction letter (e.g. `RRKL`).
+  `heroKicked`. If there is NO box in `dir` and the cell is free, the same input **throws the
+  hero**: `hero.sliding = dir`, it slides one cell per KICK_INTERVAL until blocked (`heroSlid`),
+  stopping (then falling) under gravity as boxes do; it never pushes while sliding. One move,
+  undoable. Touch input: a swipe is a kick/throw only when it ENDS in the edge band of the screen
+  in the swipe direction (band ≈ max(64 px, 10% of that viewport dimension)); anything shorter is a
+  step. Keyboard: Shift+arrow. Solutions write a kick/throw as `K` + direction (e.g. `RRKL`).
 - **Undo:** `snapshotState(state)` / `restoreState(state, snap)` in core (deep copies of all regions
   and box/hero positions, dockings invalidated on restore). The app keeps a stack of snapshots, one
   per hero move, capped at 200; Z or the Undo button restores the previous one. Undo exists only in

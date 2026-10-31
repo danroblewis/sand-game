@@ -40,7 +40,7 @@ export type { GameSpace, Puller } from './transfer';
 export { createGame, stepGame, checkCompletions, boxComplete, dissolvedGrains } from './game';
 export { applyConveyors, buildConveyor, conveyorAtCell, conveyorPlan, riderNextFree, firstCell, DIR_VEC } from './conveyors';
 export { applyBoxGravity, boxSupported, fallPlan } from './gravity';
-export { moveHero, heroGravity, heroSupported, heroCellFree, heroCanPush, kickBox, applySliding, slidePlan } from './hero';
+export { moveHero, heroGravity, heroSupported, heroCellFree, heroCanPush, kickBox, kick, applySliding, slidePlan, heroSlidePlan } from './hero';
 export { snapshotState, restoreState } from './snapshot';
 export type { GameSnapshot } from './snapshot';
 export { applyForces, forcePlan, forceTrain } from './force';

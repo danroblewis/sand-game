@@ -4,6 +4,7 @@ import {
   KICK_INTERVAL,
   kickBox,
   slidePlan,
+  heroSlidePlan,
   OCC_HERO,
   buildOccupancy,
   canPlace,
@@ -35,7 +36,7 @@ describe('hero: walking and pushing', () => {
   it('createGame sets the hero (null otherwise); it blocks canPlace and occupancy; boxes cannot be dragged', () => {
     expect(createGame(level({})).hero).toBe(null);
     const s = createGame(hero({ boxes: [{ shape: '1x1', x: 3, y: 0, color: 1 }] }, { x: 1, y: 0 }));
-    expect(s.hero).toEqual({ x: 1, y: 0, facing: 'right', falling: 0 });
+    expect(s.hero).toEqual({ x: 1, y: 0, facing: 'right', falling: 0, sliding: null });
     expect(canPlace(s, s.boxes[0], 1, 0)).toBe(false);
     expect(buildOccupancy(s)[1]).toBe(OCC_HERO);
     expect(tryMoveBox(s, 0, 1, 0)).toBe(false);
@@ -243,7 +244,8 @@ describe('kick', () => {
     expect(ev.filter((e) => e.type === 'boxMoved').length).toBe(3);
     expect(ev.filter((e) => e.type === 'boxSlid')).toEqual([{ type: 'boxSlid', boxId: 0, dir: 'right', cells: 3 }]);
     expect(slidePlan(s).size).toBe(0);
-    expect(kickBox(s, 'right')).toBe(false); // not adjacent any more
+    expect(kickBox(s, 'right')).toBe(true); // no box adjacent any more: a throw
+    expect(s.hero!.sliding).toBe('right');
   });
 
   it('stops at another box; the hero cannot push a sliding box; it can be kicked again once stopped', () => {
@@ -324,6 +326,76 @@ describe('kick', () => {
     const evB = run(a, 20).filter((e) => e.type === 'boxSlid');
     expect(evB).toEqual(evA); // same stop, same cell count (the counter is part of the snapshot)
     expect(evA).toEqual([{ type: 'boxSlid', boxId: 0, dir: 'right', cells: 4 }]);
+  });
+});
+
+describe('throw (kick with no box ahead)', () => {
+  const row = (p: Partial<LevelDef>, at = { x: 0, y: 0 }) => hero({ width: 7, height: 3, ...p }, at);
+
+  it('throws the hero to a wall: one move, heroThrown, heroMoved per cell, heroSlid with the count', () => {
+    const s = createGame(row({ walls: [{ x: 5, y: 0 }] }));
+    expect(kickBox(s, 'right')).toBe(true);
+    expect(s.hero!.sliding).toBe('right');
+    expect(s.moves).toBe(1);
+    expect(s.events).toContainEqual({ type: 'heroThrown', dir: 'right' });
+    expect(heroSlidePlan(s)).toBe('right');
+    const ev = run(s, 6 * KICK_INTERVAL);
+    expect(pos(s)).toEqual([4, 0]);
+    expect(s.hero!.sliding).toBe(null);
+    expect(ev.filter((e) => e.type === 'heroMoved').length).toBe(4);
+    expect(ev.filter((e) => e.type === 'heroSlid')).toEqual([{ type: 'heroSlid', dir: 'right', cells: 4 }]);
+    expect(heroSlidePlan(s)).toBe(null);
+    expect(s.moves).toBe(1);
+  });
+
+  it('stops at a box without pushing it; input is ignored while sliding', () => {
+    const s = createGame(row({ boxes: [{ shape: '1x1', x: 4, y: 0, color: 1 }] }));
+    expect(kickBox(s, 'right')).toBe(true); // (1,0) is free: a throw
+    expect(moveHero(s, 'down')).toBe(false); // sliding: no input
+    expect(kickBox(s, 'down')).toBe(false);
+    const ev = run(s, 6 * KICK_INTERVAL);
+    expect(pos(s)).toEqual([3, 0]);
+    expect(s.boxes[0].x).toBe(4); // not pushed
+    expect(ev.filter((e) => e.type === 'heroSlid')).toEqual([{ type: 'heroSlid', dir: 'right', cells: 3 }]);
+    expect(moveHero(s, 'down')).toBe(true); // input again after it stopped
+  });
+
+  it('a kick with a box ahead kicks the box, not the hero', () => {
+    const s = createGame(row({ boxes: [{ shape: '1x1', x: 1, y: 0, color: 1 }] }));
+    expect(kickBox(s, 'right')).toBe(true);
+    expect(s.boxes[0].sliding).toBe('right');
+    expect(s.hero!.sliding).toBe(null);
+    expect(s.events.some((e) => e.type === 'heroThrown')).toBe(false);
+  });
+
+  it('under gravity the thrown hero slides off a ledge, stops sliding, falls and lands', () => {
+    const s = createGame({ ...hero({ width: 7, height: 6, walls: [{ x: 0, y: 3 }, { x: 1, y: 3 }, { x: 2, y: 3 }] }, { x: 0, y: 2 }), boxGravity: true });
+    expect(kickBox(s, 'up')).toBe(false); // no vertical throws with gravity
+    expect(kickBox(s, 'right')).toBe(true);
+    const ev = run(s, 12 * BOX_FALL_INTERVAL);
+    expect(ev.find((e) => e.type === 'heroSlid')).toEqual({ type: 'heroSlid', dir: 'right', cells: 3 }); // (0,2)→(3,2)
+    expect(pos(s)).toEqual([3, 5]);
+    expect(ev.filter((e) => e.type === 'heroLanded')).toEqual([{ type: 'heroLanded', fell: 3 }]);
+  });
+
+  it('belts do not carry a sliding hero; undo mid-slide resumes identically', () => {
+    const lv = row({ walls: [{ x: 6, y: 0 }] });
+    const a = createGame(lv, 2);
+    kickBox(a, 'right');
+    run(a, 3);
+    const snap = snapshotState(a);
+    const at = JSON.stringify([a.hero, a.tick, a.moves]);
+    const evA = run(a, 20).filter((e) => e.type === 'heroSlid');
+    restoreState(a, snap);
+    expect(JSON.stringify([a.hero, a.tick, a.moves])).toBe(at);
+    expect(a.hero!.sliding).toBe('right');
+    expect(run(a, 20).filter((e) => e.type === 'heroSlid')).toEqual(evA);
+    expect(evA).toEqual([{ type: 'heroSlid', dir: 'right', cells: 5 }]);
+    // a belt under the hero does nothing while it slides
+    const b = createGame({ ...row({ conveyors: [{ x: 0, y: 0, dir: 'down', length: 1, interval: 1 }] }) });
+    kickBox(b, 'right');
+    run(b, 1);
+    expect(pos(b)).toEqual([1, 0]);
   });
 });
 
