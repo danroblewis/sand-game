@@ -89,6 +89,10 @@ export function validateLevel(level: LevelDef): string[] {
       return;
     }
     if (!validColor(b.color)) p.push(`${tag}: ${label} color ${b.color} not in 1..12`);
+    // Driven box: a built-in force in one of the four directions (frozen driven boxes are fine; they
+    // do nothing until they thaw).
+    if (b.force !== undefined && !['up', 'down', 'left', 'right'].includes(b.force as string))
+      p.push(`${tag}: ${label} force ${String(b.force)} is not up/down/left/right`);
     if (!(isInt(b.x) && isInt(b.y))) p.push(`${tag}: ${label} position must be integer`);
     const key = `${b.x},${b.y}`;
     if (seenPos.has(key)) p.push(`${tag}: ${label} duplicate box position`);

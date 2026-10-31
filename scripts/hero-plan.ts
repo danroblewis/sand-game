@@ -7,6 +7,8 @@
 // It knows nothing about sand: pin the positions of boxes that must not move (extra goals), then
 // prove the result with the replay. In zsh pass multi-goal strings unquoted or with ${=var}.
 // --kick also searches kicks (K + direction: the box slides until blocked, the hero stays).
+// Driven boxes (force) push their trains in the model's settle, like gravity; they can't be pushed
+// against their force.
 import { getLevel } from '../src/levels';
 import { replayLevel } from '../src/levels/replay';
 import { SHAPES } from '../src/core/shapes';
@@ -45,13 +47,44 @@ function fits(s: S, i: number, x: number, y: number, heroBlocks: boolean) {
   }
   return true;
 }
+const DV: Record<string, [number, number]> = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+const OPP: Record<string, string> = { up: 'down', down: 'up', left: 'right', right: 'left' };
+const force = mov.map((b) => b.force ?? null);
+/** Driven boxes (DESIGN.md "Driven boxes"): push the train ahead one cell if every target cell is
+ *  free (no wall / sand box / frozen box / hero / edge); a train holding an opposed driver is stuck. */
+function pushTrain(s: S, driver: number): boolean {
+  const f = force[driver]!;
+  const [dx, dy] = DV[f];
+  const train = new Set([driver]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    const others = new Map<number, number>();
+    for (let k = 0; k < mov.length; k++) if (!train.has(k)) for (const c of cells[k]) others.set((s.p[2 * k + 1] + c.y) * W + s.p[2 * k] + c.x, k);
+    for (const k of [...train]) for (const c of cells[k]) {
+      const x = s.p[2 * k] + c.x + dx, y = s.p[2 * k + 1] + c.y + dy;
+      if (x < 0 || y < 0 || x >= W || y >= H || fixed.has(y * W + x) || (x === s.hx && y === s.hy)) return false;
+      const j = others.get(y * W + x);
+      if (j !== undefined && !train.has(j)) {
+        if (force[j] === OPP[f]) return false;
+        train.add(j);
+        grew = true;
+      }
+    }
+  }
+  for (const k of train) { s.p[2 * k] += dx; s.p[2 * k + 1] += dy; }
+  return true;
+}
+/** Settle the abstract board: gravity (bottom-up; up-driven boxes don't fall), then driven trains,
+ *  repeated until nothing moves. */
 function settleGrav(s: S) {
-  if (!grav) return;
-  for (let moved = true; moved; ) {
+  for (let moved = true, guard = 0; moved && guard < 200; guard++) {
     moved = false;
-    const order = mov.map((_, i) => i).sort((a, b) => s.p[2 * b + 1] - s.p[2 * a + 1]);
-    for (const i of order) if (fits(s, i, s.p[2 * i], s.p[2 * i + 1] + 1, true)) { s.p[2 * i + 1]++; moved = true; }
-    if (free(occ(s), s.hx, s.hy + 1)) { s.hy++; moved = true; }
+    if (grav) {
+      const order = mov.map((_, i) => i).sort((a, b) => s.p[2 * b + 1] - s.p[2 * a + 1]);
+      for (const i of order) if (force[i] !== 'up' && fits(s, i, s.p[2 * i], s.p[2 * i + 1] + 1, true)) { s.p[2 * i + 1]++; moved = true; }
+      if (free(occ(s), s.hx, s.hy + 1)) { s.hy++; moved = true; }
+    }
+    for (let i = 0; i < mov.length; i++) if (force[i] && pushTrain(s, i)) moved = true;
   }
 }
 const D: Record<string, [number, number]> = { U: [0, -1], D: [0, 1], L: [-1, 0], R: [1, 0] };
@@ -64,7 +97,8 @@ function step(s0: S, d: string): S | null {
   const o = occ(s);
   if (free(o, tx, ty)) { s.hx = tx; s.hy = ty; settleGrav(s); return s; }
   const i = mov.findIndex((_, k) => cells[k].some((c) => s.p[2 * k] + c.x === tx && s.p[2 * k + 1] + c.y === ty));
-  if (i >= 0 && fits(s, i, s.p[2 * i] + dx, s.p[2 * i + 1] + dy, false)) {
+  const dirName = { U: 'up', D: 'down', L: 'left', R: 'right' }[d]!;
+  if (i >= 0 && force[i] !== OPP[dirName] && fits(s, i, s.p[2 * i] + dx, s.p[2 * i + 1] + dy, false)) {
     s.p[2 * i] += dx; s.p[2 * i + 1] += dy; s.hx = tx; s.hy = ty; settleGrav(s); return s;
   }
   if (grav && free(o, tx, ty - 1) && free(o, s.hx, s.hy - 1)) { s.hx = tx; s.hy = ty - 1; settleGrav(s); return s; }
@@ -95,6 +129,7 @@ const goalFns = goals.map((g) => {
   return (s: S) => s.p[2 * bi] === gx && s.p[2 * bi + 1] === gy;
 });
 const start: S = { hx: st.hero!.x, hy: st.hero!.y, p: mov.flatMap((b) => [b.x, b.y]) };
+settleGrav(start);
 const prev = new Map<string, [string, string]>([[key(start), ['', '']]]);
 const q: S[] = [start];
 for (let qi = 0; qi < q.length && qi < 3_000_000; qi++) {

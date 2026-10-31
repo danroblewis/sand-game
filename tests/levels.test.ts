@@ -4,6 +4,12 @@ import { LEVELS, getLevel } from '../src/levels/index';
 import { levelCapacityByColor, levelSandByColor, validateLevel, validateLevels } from '../src/levels/validate';
 import { parseHeroEntry, parseStep, replayLevel, settle } from '../src/levels/replay';
 import { createGame } from '../src/core';
+import { EXPANSE } from '../src/levels/expanse';
+
+/** Chapter 5 "Expanse" (big maps, src/levels/expanse.ts): its own size, camera and mode rules. */
+const CH5 = new Set(EXPANSE.map((l) => l.id));
+/** Chapters 1-4, in play order (chapter 5 is spliced in after them). */
+const EARLY = LEVELS.filter((l) => !CH5.has(l.id));
 
 const base = (): LevelDef => ({
   id: 'test',
@@ -18,9 +24,9 @@ const base = (): LevelDef => ({
 });
 
 describe('LEVELS', () => {
-  it('has 14-80 levels', () => {
+  it('has 14-100 levels', () => {
     expect(LEVELS.length).toBeGreaterThanOrEqual(14);
-    expect(LEVELS.length).toBeLessThanOrEqual(80);
+    expect(LEVELS.length).toBeLessThanOrEqual(100);
   });
 
   it('chapter 1 (levels 1-18) has no box gravity; chapter 2 (Workshop) is all box gravity', () => {
@@ -34,16 +40,16 @@ describe('LEVELS', () => {
     });
   });
 
-  it('chapters 3+ (Pusher, Pusher II: levels 28+) all have a hero, no belts; earlier levels have none', () => {
+  it('chapters 3-4 (Pusher, Pusher II: levels 28+) all have a hero, no belts; earlier levels have none', () => {
     LEVELS.slice(0, 27).forEach((l) => expect(l.hero, l.id).toBeUndefined());
-    const hero = LEVELS.slice(27);
+    const hero = EARLY.slice(27);
     expect(hero.length).toBeGreaterThanOrEqual(14);
     hero.forEach((l) => {
       expect(l.hero, l.id).toBeDefined();
       expect(l.conveyors ?? [], `${l.id}: no belts in hero levels`).toEqual([]);
     });
     // within each hero chapter: floating Sokoban first, then platform (gravity) Sokoban
-    for (const ch of [LEVELS.slice(27, 41), LEVELS.slice(41)]) {
+    for (const ch of [EARLY.slice(27, 41), EARLY.slice(41)]) {
       if (!ch.length) continue;
       const g = ch.map((l) => !!l.boxGravity);
       if (!g.includes(true)) continue;
@@ -70,6 +76,8 @@ describe('LEVELS', () => {
       });
 
       it('has a portrait-friendly board and at most 6 colors', () => {
+        expect(levelCapacityByColor(level).size).toBeLessThanOrEqual(6);
+        if (CH5.has(level.id)) return; // big maps: see the chapter 5 section
         expect(level.width).toBeGreaterThanOrEqual(6);
         expect(level.width).toBeLessThanOrEqual(8);
         expect(level.height).toBeGreaterThanOrEqual(7);
@@ -99,7 +107,9 @@ describe('LEVELS', () => {
         }
         // every box is dragged at least once unless it is completed in place (frozen boxes that
         // thaw already docked) or, with box gravity, dropped into place when its support is pulled
-        // (a closet over a shaft); the physics replay proves those complete.
+        // (a closet over a shaft); the physics replay proves those complete. Chapter 5 drag levels
+        // may seal a box in a pocket that a chain fills in place (Relay).
+        if (CH5.has(level.id)) return;
         const dragged = new Set(level.solution!.map((st) => parseStep(st)!.box));
         level.boxes.forEach((b, i) => {
           if (!dragged.has(i) && !level.boxGravity) expect(b.frozen ?? 0, `box#${i} never moves`).toBeGreaterThan(0);
@@ -152,6 +162,84 @@ describe('hero solutions with kicks', () => {
     // a plain push moves it one cell only: not under the sand box, no win
     expect(replayLevel(lv, ['R'], { seed: 7 }).won).toBe(false);
   });
+});
+
+describe('driven boxes in the replay', () => {
+  it('a right-driven box presses its train against a tray and the level finishes by itself', () => {
+    // the blue driver pushes yellow and red right until red docks beside the tray (top band red);
+    // each pop lets the train advance one cell onto the next band: no input at all
+    const lv: LevelDef = {
+      id: 'force-test',
+      name: 'Force Test',
+      width: 7,
+      height: 3,
+      sandBoxes: [{ x: 4, y: 1, w: 3, h: 1, layers: [{ color: 6, amount: 1 }, { color: 3, amount: 1 }, { color: 1, amount: 1 }] }],
+      boxes: [
+        { shape: '1x1', x: 0, y: 1, color: 6, force: 'right' },
+        { shape: '1x1', x: 1, y: 1, color: 3 },
+        { shape: '1x1', x: 2, y: 1, color: 1 },
+      ],
+      solution: [],
+    };
+    expect(validateLevel(lv)).toEqual([]);
+    for (const seed of [7, 1]) {
+      const r = replayLevel(lv, [], { seed });
+      expect(r.won, `${r.why}`).toBe(true);
+    }
+    // without the force nothing ever docks
+    const still = { ...lv, boxes: lv.boxes.map((b) => ({ ...b, force: undefined })) };
+    expect(replayLevel(still, [], { seed: 7 }).won).toBe(false);
+  });
+});
+
+describe('chapter 5 (Expanse, big maps)', () => {
+  it('is 8-10 levels spliced in after Pusher II', () => {
+    expect(EXPANSE.length).toBeGreaterThanOrEqual(8);
+    expect(EXPANSE.length).toBeLessThanOrEqual(10);
+    const at = LEVELS.indexOf(EXPANSE[0]);
+    expect(at, 'chapter 5 is in LEVELS').toBeGreaterThan(0);
+    expect(LEVELS.slice(at, at + EXPANSE.length)).toEqual(EXPANSE);
+    expect(EARLY.length).toBe(LEVELS.length - EXPANSE.length);
+  });
+
+  it('is mostly hero levels, with at least one drag level and one gravity level', () => {
+    const hero = EXPANSE.filter((l) => l.hero);
+    expect(hero.length).toBeGreaterThan(EXPANSE.length / 2);
+    expect(EXPANSE.some((l) => !l.hero), 'a drag level').toBe(true);
+    expect(EXPANSE.some((l) => l.boxGravity), 'a gravity level').toBe(true);
+  });
+
+  it('brings belts back, as loops in some levels', () => {
+    expect(EXPANSE.some((l) => (l.conveyors ?? []).length >= 4)).toBe(true);
+  });
+
+  for (const level of EXPANSE) {
+    describe(level.id, () => {
+      it('is a big board (up to 32x24) with a scroll or rooms camera', () => {
+        expect(level.width).toBeLessThanOrEqual(32);
+        expect(level.height).toBeLessThanOrEqual(24);
+        expect(level.width >= 6 && level.height >= 6).toBe(true);
+        // bigger than the portrait boards of chapters 1-4 (8x11) in at least one direction
+        expect(level.width > 8 || level.height > 11, `${level.width}x${level.height}`).toBe(true);
+        expect(['scroll', 'rooms']).toContain(level.camera);
+      });
+
+      it('every box and the hero start resting under box gravity', () => {
+        if (!level.boxGravity) return;
+        // validateLevel checks this; restated here because big gravity maps make it easy to miss
+        expect(validateLevel(level).filter((e) => /resting/.test(e))).toEqual([]);
+      });
+
+      it('loops use 1x1 boxes on their belts', () => {
+        const belts = new Set((level.conveyors ?? []).flatMap((c) => {
+          const [dx, dy] = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }[c.dir];
+          return Array.from({ length: c.length }, (_, k) => `${c.x + k * dx},${c.y + k * dy}`);
+        }));
+        for (const b of level.boxes)
+          if (belts.has(`${b.x},${b.y}`)) expect(b.shape, `box at ${b.x},${b.y} starts on a belt`).toBe('1x1');
+      });
+    });
+  }
 });
 
 describe('validateLevel', () => {
@@ -337,6 +425,18 @@ describe('validateLevel', () => {
     expect(validateLevel({ ...g, hero: { x: 1, y: 3 } }).join('\n')).toMatch(/hero start \(1,3\) does not start resting/);
     expect(validateLevel({ ...g, hero: { x: 0, y: 6 } })).toEqual([]); // on the red box
     expect(validateLevel({ ...g, hero: { x: 2, y: 0 } })).toEqual([]); // on the sand box
+  });
+
+  it('driven boxes: force must be up/down/left/right; frozen driven boxes are allowed', () => {
+    const ok = base();
+    ok.boxes[0] = { ...ok.boxes[0], force: 'right' };
+    expect(validateLevel(ok)).toEqual([]);
+    const frozen = base();
+    frozen.boxes[0] = { ...frozen.boxes[0], force: 'up', frozen: 1 };
+    expect(validateLevel(frozen)).toEqual([]);
+    const bad = base();
+    bad.boxes[1] = { ...bad.boxes[1], force: 'sideways' as never };
+    expect(validateLevel(bad).join('\n')).toMatch(/box#1.*force sideways is not up\/down\/left\/right/);
   });
 
   it('rejects duplicate level ids', () => {
