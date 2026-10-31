@@ -120,6 +120,7 @@ export class Hud {
   private prevBtn: HTMLButtonElement;
   private undoBtn!: HTMLButtonElement;
   private overviewBtn!: HTMLButtonElement;
+  private topUndo!: HTMLButtonElement;
   private modeIcons!: HTMLElement;
   private menu!: HTMLElement;
   private menuTitle!: HTMLElement;
@@ -242,8 +243,18 @@ export class Hud {
     gear.setAttribute('aria-label', 'Menu');
     gear.title = 'Menu (Esc)';
     gear.addEventListener('click', () => this.openMenu());
+    // Undo in the top bar (hero levels): the same as Z / the menu entry.
+    this.topUndo = el('button', 'btn-top btn-undo-top', ICONS.undo);
+    this.topUndo.type = 'button';
+    this.topUndo.setAttribute('aria-label', 'Undo (Z)');
+    this.topUndo.title = 'Undo (Z)';
+    this.topUndo.disabled = true;
+    this.topUndo.addEventListener('click', () => {
+      handlers.onUndo?.();
+      this.topUndo.blur();
+    });
     const right = el('div', 'hud-top-right');
-    right.append(moves, this.overviewBtn, gear);
+    right.append(moves, this.overviewBtn, this.topUndo, gear);
     top.append(info, right);
 
     // ----- board: everything below the top bar -----
@@ -615,6 +626,7 @@ export class Hud {
   /** Enable the Undo button when there is something to undo. */
   setUndoCount(n: number): void {
     this.undoBtn.disabled = n <= 0;
+    this.topUndo.disabled = n <= 0;
   }
 
   setMoves(n: number): void {

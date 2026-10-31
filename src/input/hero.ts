@@ -25,12 +25,12 @@ export const heroApi = {
   },
 };
 
-/** A swipe is a kick only when it is at least KICK_MIN_CELLS long and the finger ends inside the
- *  viewport's edge band in the swipe direction; band = max(KICK_BAND_MIN_PX, KICK_BAND_FRAC of the
- *  viewport along that axis). Everything else is one step. */
-export const KICK_MIN_CELLS = 2;
-export const KICK_BAND_MIN_PX = 64;
-export const KICK_BAND_FRAC = 0.1;
+/** A swipe is a kick (or a throw, with no box ahead) when its length along the locked direction
+ *  reaches KICK_FRAC of the viewport's shorter side, clamped to KICK_MIN_PX..KICK_MAX_PX. Shorter
+ *  swipes are one step. */
+export const KICK_FRAC = 0.5;
+export const KICK_MIN_PX = 120;
+export const KICK_MAX_PX = 400;
 /** The trail fades out over this long after release. */
 export const TRAIL_FADE_MS = 150;
 
@@ -117,6 +117,8 @@ interface TouchHold {
   /** The swipe locked a direction at some point (so a release is not a tap). */
   swiped: boolean;
   armed: boolean;
+  /** performance.now() at touch-down (stale-gesture safety). */
+  t0: number;
 }
 
 const STEP_MS = 90;
@@ -128,6 +130,21 @@ export class HeroInput {
   private path: Dir[] = [];
 
   private hold: TouchHold | null = null;
+  /** Pointers currently down on the canvas (a second one cancels the gesture). */
+  private down = new Set<number>();
+  /** A multi-touch gesture happened: ignore everything until every finger is up. */
+  private suppressed = false;
+
+  /**
+   * Drop any touch gesture in progress: no move on release, no arrow. Called when a second finger
+   * lands, a pinch / pan starts, the overview toggles, the level changes, or the tab is hidden.
+   */
+  cancelGesture(): void {
+    if (this.hold || this.down.size > 0) this.suppressed = this.down.size > 0;
+    this.hold = null;
+    this.deps.view.charge = null;
+    this.cancel();
+  }
 
   constructor(private deps: HeroInputDeps) {
     const c = deps.canvas;
@@ -136,11 +153,18 @@ export class HeroInput {
       return { x: x - r.left, y: y - r.top };
     };
     c.addEventListener('pointerdown', (e) => {
+      this.down.add(e.pointerId);
+      if (this.down.size > 1 || (this.hold && this.hold.id !== e.pointerId)) {
+        // a second finger: this is a pinch / pan, never a hero move
+        this.cancelGesture();
+        this.suppressed = true;
+        return;
+      }
+      if (this.suppressed) return;
       if (!deps.getState().hero || deps.isBlocked?.()) return;
       if (e.pointerType === 'mouse' && e.button !== 0) return;
-      if (this.hold) return; // one finger
       e.preventDefault();
-      this.hold = { id: e.pointerId, ox: e.clientX, oy: e.clientY, x: e.clientX, y: e.clientY, dir: null, swiped: false, armed: false };
+      this.hold = { id: e.pointerId, ox: e.clientX, oy: e.clientY, x: e.clientX, y: e.clientY, dir: null, swiped: false, armed: false, t0: performance.now() };
       deps.view.charge = null;
     });
     c.addEventListener('pointermove', (e) => {
@@ -167,8 +191,25 @@ export class HeroInput {
       this.paint();
     });
     const end = (e: PointerEvent) => {
+      this.down.delete(e.pointerId);
+      if (this.down.size === 0) this.suppressed = false;
       const h = this.hold;
       if (!h || e.pointerId !== h.id) return;
+      // Moves can be coalesced or dropped: judge the swipe by where the finger was released too.
+      if (e.type === 'pointerup') {
+        h.x = e.clientX;
+        h.y = e.clientY;
+        const dx = h.x - h.ox;
+        const dy = h.y - h.oy;
+        if (!h.dir && !h.swiped && Math.hypot(dx, dy) >= SWIPE_PX) {
+          h.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
+          h.swiped = true;
+        }
+        if (h.dir) {
+          const [vx, vy] = DIRS[h.dir];
+          h.armed = Math.max(0, dx * vx + dy * vy) >= this.kickDistance();
+        }
+      }
       this.hold = null;
       // let the trail fade out briefly
       if (deps.view.charge) deps.view.charge = { ...deps.view.charge, fadeAt: performance.now() };
@@ -186,21 +227,29 @@ export class HeroInput {
     };
     c.addEventListener('pointerup', end);
     c.addEventListener('pointercancel', end);
+    // Fingers lifted while a capture listener swallowed the event still leave the set.
+    const lifted = (e: PointerEvent) => {
+      this.down.delete(e.pointerId);
+      if (this.down.size === 0) this.suppressed = false;
+    };
+    window.addEventListener('pointerup', lifted, true);
+    window.addEventListener('pointercancel', lifted, true);
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) {
+        this.down.clear();
+        this.suppressed = false;
+        this.cancelGesture();
+      }
+    });
   }
 
-  /** Edge band size (CSS px) for a direction, from the visible canvas. */
-  bandSize(dir: Dir): number {
+  /** Kick threshold in CSS px: half the viewport's shorter side, clamped. */
+  kickDistance(): number {
     const r = this.deps.canvas.getBoundingClientRect();
-    const axis = dir === 'left' || dir === 'right' ? r.width : r.height;
-    return Math.max(KICK_BAND_MIN_PX, KICK_BAND_FRAC * axis);
+    return Math.max(KICK_MIN_PX, Math.min(KICK_MAX_PX, KICK_FRAC * Math.min(r.width, r.height)));
   }
 
-  /** Minimum kick drag length in CSS px (KICK_MIN_CELLS of the current cell size). */
-  kickMinLength(): number {
-    return KICK_MIN_CELLS * (this.deps.renderer.cellSize / this.deps.renderer.dpr);
-  }
-
-  /** Update the trail in the view; tick when the swipe becomes / stops being a kick. */
+  /** Update the arrow in the view; tick when the swipe crosses the threshold (either way). */
   private paint(): void {
     const h = this.hold;
     if (!h || !h.dir) {
@@ -209,22 +258,25 @@ export class HeroInput {
     }
     const [vx, vy] = DIRS[h.dir];
     const dist = Math.max(0, (h.x - h.ox) * vx + (h.y - h.oy) * vy);
-    const r = this.deps.canvas.getBoundingClientRect();
-    const band = this.bandSize(h.dir);
-    const inBand =
-      h.dir === 'right' ? h.x >= r.right - band : h.dir === 'left' ? h.x <= r.left + band : h.dir === 'down' ? h.y >= r.bottom - band : h.y <= r.top + band;
-    const armed = inBand && dist >= this.kickMinLength();
+    const armed = dist >= this.kickDistance();
     if (armed !== h.armed) {
       h.armed = armed;
       this.deps.onThreshold?.(armed);
     }
-    this.deps.view.charge = { dir: h.dir, dist, band, inBand, armed };
+    this.deps.view.charge = { dir: h.dir, dist, armed };
   }
 
-  /** Per frame: drop a faded trail. */
+  /** Per frame: drop a faded arrow; safety for stale gestures. */
   tick(now = performance.now()): void {
     const c = this.deps.view.charge;
     if (c && c.fadeAt !== undefined && now - c.fadeAt > TRAIL_FADE_MS) this.deps.view.charge = null;
+    // An arrow with no gesture behind it, or a gesture older than 10 s: clear it.
+    if (this.deps.view.charge && !this.hold && this.deps.view.charge.fadeAt === undefined) this.deps.view.charge = null;
+    if (this.hold && now - this.hold.t0 > 10000) {
+      this.down.clear();
+      this.suppressed = false;
+      this.cancelGesture();
+    }
   }
 
   /** Arrow / WASD (auto-repeat walks): one step; with Shift: kick. */

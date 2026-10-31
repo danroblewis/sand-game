@@ -157,11 +157,7 @@ export interface HeroCharge {
   dir: Dir;
   /** Drag length along `dir`, CSS px. */
   dist: number;
-  /** Edge band size (CSS px) on the `dir` side of the viewport. */
-  band: number;
-  /** The finger is inside the edge band. */
-  inBand: boolean;
-  /** Release kicks (in the band and long enough). */
+  /** Release kicks (the drag reached the kick distance). */
   armed: boolean;
   /** Set on release: the trail fades out from this time (performance.now ms). */
   fadeAt?: number;
@@ -467,7 +463,8 @@ export class Renderer {
   private camInit = false;
   private camAnim: { t0: number; fx: number; fy: number; tx: number; ty: number } | null = null;
   private room: { x: number; y: number } | null = null;
-  private manualFocus: { x: number; y: number; key: string } | null = null;
+  /** Overview tap / pan: look here until the player moves something. `direct` = 1:1 pan, no easing. */
+  private manualFocus: { x: number; y: number; key: string; direct?: boolean } | null = null;
   private ovOn = false;
   private ovT = 0;
   /** Camera viewport in grid cells this frame (for pings / overview outline). */
@@ -511,6 +508,21 @@ export class Renderer {
     this.ovOn = false;
   }
 
+  /** Pan the camera by a pointer delta in CSS px (drag on empty board / two fingers): 1:1, clamped. */
+  panBy(dxCss: number, dyCss: number): void {
+    if (!this.cameraActive || this.ovOn) return;
+    const cs = this.camCs / this.dpr; // CSS px per cell
+    const vw = this.canvas.width / this.camCs;
+    const vh = this.canvas.height / this.camCs;
+    const clampC = (c: number, v: number, size: number) => (size <= v ? size / 2 : Math.max(v / 2, Math.min(size - v / 2, c)));
+    const x = clampC(this.camX - dxCss / cs, vw, this.boardW);
+    const y = clampC(this.camY - dyCss / cs, vh, this.boardH);
+    this.camX = x;
+    this.camY = y;
+    this.camAnim = null;
+    this.manualFocus = { x, y, key: this.focusKey, direct: true };
+  }
+
   private focusKey = '';
 
   /** Focus point (cells) for the camera: hero, held box, last moved box, else board centre. */
@@ -520,7 +532,9 @@ export class Renderer {
       return { x: (p ? p.rx : state.hero.x) + 0.5, y: (p ? p.ry : state.hero.y) + 0.5, key: `h${state.hero.x},${state.hero.y}` };
     }
     const id = view.dragBoxId ?? view.lastMovedBoxId ?? null;
-    const b = id !== null ? state.boxes.find((x) => x.id === id && x.state === 'active') : undefined;
+    let b = id !== null ? state.boxes.find((x) => x.id === id && x.state === 'active') : undefined;
+    // Drag levels start on the first movable box (lowest id), never on empty board.
+    if (!b) b = state.boxes.filter((x) => x.state === 'active' && x.frozen === 0).sort((p, q) => p.id - q.id)[0];
     if (b) {
       const p = this.positions.get(b.id);
       return { x: (p ? p.rx : b.x) + b.bw / 2, y: (p ? p.ry : b.y) + b.bh / 2, key: `b${b.id},${b.x},${b.y}` };
@@ -554,7 +568,14 @@ export class Renderer {
     const clampC = (c: number, v: number, size: number) => (size <= v ? size / 2 : Math.max(v / 2, Math.min(size - v / 2, c)));
     let tx: number;
     let ty: number;
-    if (this.camMode === 'rooms') {
+    if (this.manualFocus?.direct) {
+      // free look: hold exactly where the player panned
+      tx = clampC(fx, vw, this.boardW);
+      ty = clampC(fy, vh, this.boardH);
+      this.camX = tx;
+      this.camY = ty;
+      this.camAnim = null;
+    } else if (this.camMode === 'rooms') {
       const r = this.pickRoom(fx, fy, vw, vh);
       tx = clampC(r.cx, vw, this.boardW);
       ty = clampC(r.cy, vh, this.boardH);
@@ -832,9 +853,6 @@ export class Renderer {
       const sd = (b as Box & { sliding?: Dir | null }).sliding;
       if (b.state === 'active' && sd) this.drawStreak(b, sd);
     }
-    // Kick: the target box pulses once the swipe is long enough to kick.
-    const kickTarget = this.chargeTarget(state, view);
-
     // Draw resting boxes first, then groups, then the selected one, then the dragged one on top.
     let selBox: Box | null = null;
     let dragBox: Box | null = null;
@@ -847,7 +865,6 @@ export class Renderer {
     for (const g of groups) this.drawGroup(g, view, now);
     if (selBox) this.drawBox(selBox, view, now);
     if (dragBox) this.drawBox(dragBox, view, now);
-    if (kickTarget) this.drawTargetPulse(kickTarget, now);
     if (state.hero) {
       const hs = heroSlideOf(state);
       this.drawHero(state, view, now, dt, !hs && heroWillFall(state, falls) ? fallPhase : -1, fallI, hs, slidePhase, kickI);
@@ -1227,83 +1244,30 @@ export class Renderer {
     ctx.restore();
   }
 
-  /** The box a kick in the charging direction would hit (next to the hero), if any. */
-  private chargeTarget(state: GameState, view: View): Box | undefined {
-    const c = view.charge;
-    const h = state.hero;
-    if (!c || !h || !c.armed || c.fadeAt !== undefined) return undefined;
-    const [dx, dy] = DIR_VEC[c.dir];
-    const x = h.x + dx;
-    const y = h.y + dy;
-    return state.boxes.find((b) => b.state === 'active' && b.frozen === 0 && b.cells.some((q) => b.x + q.x === x && b.y + q.y === y));
-  }
-
-  private drawTargetPulse(b: Box, now: number): void {
-    const p = this.positions.get(b.id);
-    const cs = this.cellSize;
-    const path = loopsPath(shapeOutline(b.shape, b.cells), this.originX + (p ? p.rx : b.x) * cs, this.originY + (p ? p.ry : b.y) * cs, cs, cs * 0.06, Math.min(cs * 0.18, cs * 0.44));
-    const ctx = this.ctx;
-    ctx.save();
-    ctx.globalAlpha = 0.45 * (0.6 + 0.4 * Math.sin(now * 0.012));
-    ctx.strokeStyle = '#ffffff';
-    ctx.shadowColor = boxGlow(b.color);
-    ctx.shadowBlur = cs * 0.3;
-    ctx.lineWidth = Math.max(2, cs * 0.06);
-    ctx.stroke(path);
-    ctx.restore();
-  }
-
-  /**
-   * Swipe trail from the hero along the locked direction, as long as the finger has dragged:
-   * translucent neutral below the kick distance; amber with an arrowhead at/after it; a faint tick
-   * marks the kick distance. Fades out briefly after release.
-   */
+  /** Swipe arrow from the hero, as long as the drag: light below the kick distance, amber at/after. */
   private drawCharge(state: GameState, c: HeroCharge, now: number): void {
     const fade = c.fadeAt !== undefined ? Math.max(0, 1 - (now - c.fadeAt) / 150) : 1;
     if (fade <= 0 || c.dist <= 0) return;
     const ctx = this.ctx;
-    // the kick band along the viewport edge on the swipe side (while dragging)
-    if (c.fadeAt === undefined) {
-      const W = this.canvas.width;
-      const H = this.canvas.height;
-      const bp = c.band * this.dpr;
-      const [bx, by, bw, bh] =
-        c.dir === 'right' ? [W - bp, 0, bp, H] : c.dir === 'left' ? [0, 0, bp, H] : c.dir === 'down' ? [0, H - bp, W, bp] : [0, 0, W, bp];
-      const g =
-        c.dir === 'right' ? ctx.createLinearGradient(W, 0, W - bp, 0) : c.dir === 'left' ? ctx.createLinearGradient(0, 0, bp, 0) : c.dir === 'down' ? ctx.createLinearGradient(0, H, 0, H - bp) : ctx.createLinearGradient(0, 0, 0, bp);
-      const col = c.inBand ? '245,200,76' : '230,236,248';
-      const a = c.inBand ? 0.22 : 0.07;
-      g.addColorStop(0, `rgba(${col},${a})`);
-      g.addColorStop(1, `rgba(${col},0)`);
-      ctx.fillStyle = g;
-      ctx.fillRect(bx, by, bw, bh);
-    }
     const cs = this.cellSize;
-    const dpr = this.dpr;
     const hp = this.heroPos;
     const h = state.hero!;
     const cx = this.originX + ((hp ? hp.rx : h.x) + 0.5) * cs;
     const cy = this.originY + ((hp ? hp.ry : h.y) + 0.5) * cs;
-    const x0 = cs * 0.38; // start at the hero's edge
-    const len = c.dist * dpr;
-    const x1 = x0 + len;
-    const w = cs * 0.2;
+    const x0 = cs * 0.4;
+    const x1 = x0 + c.dist * this.dpr;
+    const head = Math.min(cs * 0.4, c.dist * this.dpr);
+    const w = cs * 0.14;
     ctx.save();
     ctx.translate(cx, cy);
     ctx.rotate(DIR_ANGLE[c.dir]);
     ctx.globalAlpha = 0.35 * fade;
     ctx.fillStyle = c.armed ? '#f5c84c' : '#e6ecf8';
-    const head = c.armed ? Math.min(cs * 0.42, len) : 0;
+    ctx.fillRect(x0, -w / 2, Math.max(0, x1 - head - x0), w);
     ctx.beginPath();
-    ctx.moveTo(x0, -w / 2);
-    ctx.lineTo(x1 - head, -w / 2);
-    if (head > 0) {
-      ctx.lineTo(x1 - head, -head * 0.7);
-      ctx.lineTo(x1, 0);
-      ctx.lineTo(x1 - head, head * 0.7);
-    }
-    ctx.lineTo(x1 - head, w / 2);
-    ctx.lineTo(x0, w / 2);
+    ctx.moveTo(x1, 0);
+    ctx.lineTo(x1 - head, -head * 0.6);
+    ctx.lineTo(x1 - head, head * 0.6);
     ctx.closePath();
     ctx.fill();
     ctx.restore();

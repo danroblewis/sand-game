@@ -189,10 +189,36 @@ function applyCamera(def: LevelDef): void {
   view.dragEdge = undefined;
 }
 
+/** Big-map drag levels: a one-time hint about looking around. */
+let bigMapHintTimer = 0;
+let pendingHint: LevelDef | null = null;
+function maybeBigMapHint(def: LevelDef): void {
+  const p = hud.progress as typeof hud.progress & { seenBigMapHint?: boolean };
+  if (p.seenBigMapHint || def.hero || !renderer.cameraActive) return;
+  p.seenBigMapHint = true;
+  try {
+    localStorage.setItem('sandboxes.progress', JSON.stringify(p));
+  } catch {
+    /* ignore */
+  }
+  let el = document.querySelector('.bigmap-hint') as HTMLElement | null;
+  if (!el) {
+    el = document.createElement('div');
+    el.className = 'bigmap-hint';
+    el.setAttribute('role', 'status');
+    document.body.append(el);
+  }
+  el.textContent = 'Drag empty space to look around · O or the map button shows the whole board';
+  el.classList.add('show');
+  window.clearTimeout(bigMapHintTimer);
+  bigMapHintTimer = window.setTimeout(() => el?.classList.remove('show'), 4500);
+  el.onclick = () => el?.classList.remove('show');
+}
+
 function startLevel(def: LevelDef): void {
   applyCamera(def);
   undoStack = [];
-  heroInput?.cancel();
+  heroInput?.cancelGesture();
   currentLevel = def;
   state = createGame(def, newSeed());
   view.selectedBoxId = null;
@@ -203,6 +229,7 @@ function startLevel(def: LevelDef): void {
   window.clearTimeout(winTimer);
   accumulator = 0;
   layout(); // board size and hint height may have changed
+  pendingHint = def; // checked on the first rendered frame (the camera needs the final layout)
 }
 
 function loadLevel(i: number): void {
@@ -435,6 +462,11 @@ const pointerCtl = attachPointer({ canvas: hud.canvas, renderer, getState: () =>
 {
   const touches = new Map<number, { x: number; y: number }>();
   let pinchD0 = 0;
+  let mid0: { x: number; y: number } | null = null;
+  const mid = () => {
+    const [a, b] = [...touches.values()];
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  };
   let pinched = false;
   let ovTap: { id: number; x: number; y: number } | null = null;
   const c = hud.canvas;
@@ -442,15 +474,30 @@ const pointerCtl = attachPointer({ canvas: hud.canvas, renderer, getState: () =>
     const [a, b] = [...touches.values()];
     return Math.hypot(a.x - b.x, a.y - b.y);
   };
+  // A finger lifted outside the canvas must still leave the set (or the next touch looks like a pinch).
+  const forget = (e: PointerEvent) => {
+    touches.delete(e.pointerId);
+    if (touches.size < 2) pinchD0 = 0;
+    if (touches.size === 0) pinched = false;
+  };
+  window.addEventListener('pointerup', forget, true);
+  window.addEventListener('pointercancel', forget, true);
   c.addEventListener(
     'pointerdown',
     (e) => {
+      // a new primary pointer means every earlier touch has ended
+      if (e.isPrimary) {
+        touches.clear();
+        pinched = false;
+        pinchD0 = 0;
+      }
       if (e.pointerType === 'touch') touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (touches.size === 2 && renderer.cameraActive) {
         pinchD0 = dist();
+        mid0 = mid();
         pinched = true;
         pointerCtl.cancel();
-        heroInput.cancel();
+        heroInput.cancelGesture();
         e.stopImmediatePropagation();
         return;
       }
@@ -470,6 +517,10 @@ const pointerCtl = attachPointer({ canvas: hud.canvas, renderer, getState: () =>
         const r = dist() / pinchD0;
         if (r < 0.75 && !renderer.overview) renderer.setOverview(true); // fingers together: zoom out
         if (r > 1.33 && renderer.overview) renderer.setOverview(false); // spread: back in
+        // two fingers moving together: pan
+        const m = mid();
+        if (mid0 && r > 0.85 && r < 1.18) renderer.panBy(m.x - mid0.x, m.y - mid0.y);
+        mid0 = m;
         e.stopImmediatePropagation();
       } else if (ovTap) e.stopImmediatePropagation();
     },
@@ -494,7 +545,9 @@ const pointerCtl = attachPointer({ canvas: hud.canvas, renderer, getState: () =>
   c.addEventListener('pointercancel', up, { capture: true });
 }
 function toggleOverview(): void {
-  if (renderer.cameraActive) renderer.toggleOverview();
+  if (!renderer.cameraActive) return;
+  heroInput.cancelGesture();
+  renderer.toggleOverview();
 }
 attachKeyboard({
   getState: () => state,
@@ -599,6 +652,10 @@ function frame(now: number): void {
     haptics.update(dt / 1000, flowRate, now);
     releaseGoneHeldBox();
     pointerCtl.tick();
+    if (pendingHint && pendingHint === currentLevel) {
+      maybeBigMapHint(pendingHint);
+      pendingHint = null;
+    }
     heroInput.tick(now);
     hud.setBigMap(renderer.cameraActive);
     fixSelection(state, view);

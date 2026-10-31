@@ -39,6 +39,8 @@ export function attachPointer(deps: PointerDeps): PointerControl {
   const { canvas, renderer, getState, view } = deps;
   canvas.style.touchAction = 'none';
   let drag: DragInfo | null = null;
+  /** Big-map pan in progress (pointer on empty board). */
+  let pan: { id: number; x: number; y: number } | null = null;
 
   const local = (e: PointerEvent) => {
     const r = canvas.getBoundingClientRect();
@@ -76,6 +78,16 @@ export function attachPointer(deps: PointerDeps): PointerControl {
     const box = renderer.boxAtPixel(state, px, py, HIT_SLOP[e.pointerType] ?? 6);
     if (!box) {
       view.selectedBoxId = null;
+      // Big maps: dragging empty board space looks around (1:1, clamped).
+      if (renderer.cameraActive && !renderer.overview) {
+        pan = { id: e.pointerId, x: e.clientX, y: e.clientY };
+        try {
+          canvas.setPointerCapture(e.pointerId);
+        } catch {
+          /* synthetic */
+        }
+        e.preventDefault();
+      }
       return;
     }
     if (box.frozen > 0) return;
@@ -94,6 +106,12 @@ export function attachPointer(deps: PointerDeps): PointerControl {
   };
 
   const onMove = (e: PointerEvent) => {
+    if (pan && e.pointerId === pan.id) {
+      renderer.panBy(e.clientX - pan.x, e.clientY - pan.y);
+      pan.x = e.clientX;
+      pan.y = e.clientY;
+      return;
+    }
     const { px, py } = local(e);
     if (!drag) {
       if (e.pointerType === 'mouse' && !getState().hero) updateHover(px, py);
@@ -138,6 +156,10 @@ export function attachPointer(deps: PointerDeps): PointerControl {
   };
 
   const onUp = (e: PointerEvent) => {
+    if (pan && e.pointerId === pan.id) {
+      pan = null;
+      return;
+    }
     if (drag && e.pointerId === drag.pointerId) {
       endDrag();
       const { px, py } = local(e);
@@ -188,6 +210,9 @@ export function attachPointer(deps: PointerDeps): PointerControl {
     tick: () => {
       if (drag && renderer.cameraActive) applyDrag(lastPx, lastPy);
     },
-    cancel: endDrag,
+    cancel: () => {
+      pan = null;
+      endDrag();
+    },
   };
 }

@@ -21,6 +21,8 @@ export interface Progress {
   sound: boolean;
   /** Vibration feedback on (where navigator.vibrate exists). */
   haptics: boolean;
+  /** The one-time big-map "look around" hint was shown. */
+  seenBigMapHint?: boolean;
 }
 
 export type RandomMode = 'floating' | 'gravity' | 'mixed';
@@ -47,6 +49,7 @@ export function loadProgress(): Progress {
     if (typeof o.randomHero === 'boolean') p.randomHero = o.randomHero;
     if (typeof o.sound === 'boolean') p.sound = o.sound;
     if (typeof o.haptics === 'boolean') p.haptics = o.haptics;
+    if (o.seenBigMapHint === true) p.seenBigMapHint = true;
     if (Array.isArray(o.randomRecent)) p.randomRecent = o.randomRecent.filter((x) => typeof x === 'string').slice(-RECENT_MAX);
   } catch {
     /* storage unavailable or corrupt */

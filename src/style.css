@@ -1238,3 +1238,54 @@ canvas.board {
     padding-top: 8px;
   }
 }
+
+/* One-time big-map hint. */
+.bigmap-hint {
+  position: fixed;
+  left: 50%;
+  bottom: max(18px, calc(env(safe-area-inset-bottom) + 12px));
+  transform: translate(-50%, 12px);
+  max-width: min(440px, calc(100vw - 32px));
+  padding: 10px 16px;
+  border-radius: 14px;
+  background: rgba(20, 23, 32, 0.92);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.35;
+  text-align: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms, transform 220ms;
+  z-index: 40;
+}
+
+.bigmap-hint.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+
+/* Top-bar Undo (hero levels only), dimmed when there is nothing to undo. */
+.btn-undo-top {
+  display: none;
+}
+
+.app.hero .btn-undo-top {
+  display: inline-flex;
+}
+
+.btn-top:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+@media (max-width: 520px) {
+  /* make room for map + undo + gear: just the move count */
+  .app.hero .moves-label {
+    display: none;
+  }
+  .hud-top-right {
+    gap: 8px;
+  }
+}
