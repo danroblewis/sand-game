@@ -25,9 +25,13 @@ export const heroApi = {
   },
 };
 
-/** Kick timing (hold a swipe or an arrow key). */
-export const CHARGE_START_MS = 1000;
-export const KICK_HOLD_MS = 2000;
+/** Kick by distance: a swipe whose length along its direction reaches this many cells (of screen
+ *  distance, clamped to KICK_MIN_PX..KICK_MAX_PX) is a kick; shorter is one step. */
+export const KICK_DISTANCE_CELLS = 1.6;
+export const KICK_MIN_PX = 90;
+export const KICK_MAX_PX = 160;
+/** The trail fades out over this long after release. */
+export const TRAIL_FADE_MS = 150;
 
 export const DIRS: Record<Dir, [number, number]> = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
 
@@ -97,8 +101,8 @@ export interface HeroInputDeps {
   kick: (dir: Dir) => boolean;
   /** The view: the charge animation state is written to view.charge. */
   view: View;
-  /** Called once when a hold becomes armed (sound / haptic tick). */
-  onArmed?: () => void;
+  /** The swipe crossed the kick distance (either way): sound / haptic tick. */
+  onThreshold?: (armed: boolean) => void;
   isBlocked?: () => boolean;
 }
 
@@ -108,17 +112,10 @@ interface TouchHold {
   oy: number;
   x: number;
   y: number;
-  t0: number;
   dir: Dir | null;
   /** The swipe locked a direction at some point (so a release is not a tap). */
   swiped: boolean;
-  armedFired: boolean;
-}
-
-interface KeyHold {
-  dir: Dir;
-  t0: number;
-  armedFired: boolean;
+  armed: boolean;
 }
 
 const STEP_MS = 90;
@@ -130,7 +127,6 @@ export class HeroInput {
   private path: Dir[] = [];
 
   private hold: TouchHold | null = null;
-  private keyHold: KeyHold | null = null;
 
   constructor(private deps: HeroInputDeps) {
     const c = deps.canvas;
@@ -143,8 +139,8 @@ export class HeroInput {
       if (e.pointerType === 'mouse' && e.button !== 0) return;
       if (this.hold) return; // one finger
       e.preventDefault();
-      this.cancelKey();
-      this.hold = { id: e.pointerId, ox: e.clientX, oy: e.clientY, x: e.clientX, y: e.clientY, t0: performance.now(), dir: null, swiped: false, armedFired: false };
+      this.hold = { id: e.pointerId, ox: e.clientX, oy: e.clientY, x: e.clientX, y: e.clientY, dir: null, swiped: false, armed: false };
+      deps.view.charge = null;
     });
     c.addEventListener('pointermove', (e) => {
       const h = this.hold;
@@ -155,31 +151,30 @@ export class HeroInput {
       const dy = h.y - h.oy;
       if (!h.dir) {
         if (Math.hypot(dx, dy) >= SWIPE_PX) {
-          // lock a direction; the hold (for a kick) counts from the touch
           h.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up';
           h.swiped = true;
         }
       } else {
         const [vx, vy] = DIRS[h.dir];
         if (dx * vx + dy * vy < SWIPE_PX * 0.5) {
-          // moved back toward the origin: cancel (lifting now does nothing; swiping out again restarts)
+          // back to the origin: cancelled (swiping out again re-locks)
           h.dir = null;
-          h.t0 = performance.now();
-          h.armedFired = false;
+          if (h.armed) deps.onThreshold?.(false);
+          h.armed = false;
         }
       }
-      this.paintTouch();
+      this.paint();
     });
     const end = (e: PointerEvent) => {
       const h = this.hold;
       if (!h || e.pointerId !== h.id) return;
       this.hold = null;
-      deps.view.charge = null;
+      // let the trail fade out briefly
+      if (deps.view.charge) deps.view.charge = { ...deps.view.charge, fadeAt: performance.now() };
       if (e.type !== 'pointerup' || !deps.getState().hero || deps.isBlocked?.()) return;
       if (h.dir) {
         this.cancel();
-        const held = performance.now() - h.t0;
-        if (held >= KICK_HOLD_MS) deps.kick(h.dir);
+        if (h.armed) deps.kick(h.dir);
         else deps.step(h.dir);
         return;
       }
@@ -192,78 +187,41 @@ export class HeroInput {
     c.addEventListener('pointercancel', end);
   }
 
-  /** Write the touch trail / charge into the view. */
-  private paintTouch(now = performance.now()): void {
+  /** Kick distance in CSS px: KICK_DISTANCE_CELLS of the current cell size, clamped. */
+  kickDistance(): number {
+    const cell = this.deps.renderer.cellSize / this.deps.renderer.dpr;
+    return Math.max(KICK_MIN_PX, Math.min(KICK_MAX_PX, KICK_DISTANCE_CELLS * cell));
+  }
+
+  /** Update the trail in the view; tick on crossing the kick distance (either way). */
+  private paint(): void {
     const h = this.hold;
-    if (!h) return;
-    const r = this.deps.canvas.getBoundingClientRect();
-    if (!h.dir) {
+    if (!h || !h.dir) {
       this.deps.view.charge = null;
       return;
     }
     const [vx, vy] = DIRS[h.dir];
-    const proj = Math.max(0, (h.x - h.ox) * vx + (h.y - h.oy) * vy);
-    const held = now - h.t0;
-    this.deps.view.charge = {
-      dir: h.dir,
-      progress: Math.max(0, Math.min(1, (held - CHARGE_START_MS) / (KICK_HOLD_MS - CHARGE_START_MS))),
-      armed: held >= KICK_HOLD_MS,
-      trail: { ox: h.ox - r.left, oy: h.oy - r.top, x: h.ox - r.left + vx * proj, y: h.oy - r.top + vy * proj },
-    };
+    const dist = Math.max(0, (h.x - h.ox) * vx + (h.y - h.oy) * vy);
+    const kd = this.kickDistance();
+    const armed = dist >= kd;
+    if (armed !== h.armed) {
+      h.armed = armed;
+      this.deps.onThreshold?.(armed);
+    }
+    this.deps.view.charge = { dir: h.dir, dist, kickDist: kd, armed };
   }
 
-  /** Per frame: advance the charge animation; keyboard holds kick at 2 s; armed feedback. */
+  /** Per frame: drop a faded trail. */
   tick(now = performance.now()): void {
-    const st = this.deps.getState();
-    if (!st || !st.hero) {
-      if (this.hold || this.keyHold) {
-        this.hold = null;
-        this.keyHold = null;
-        this.deps.view.charge = null;
-      }
-      return;
-    }
-    if (this.hold) {
-      this.paintTouch(now);
-      if (this.hold.dir && !this.hold.armedFired && now - this.hold.t0 >= KICK_HOLD_MS) {
-        this.hold.armedFired = true;
-        this.deps.onArmed?.();
-      }
-      return;
-    }
-    const k = this.keyHold;
-    if (!k) return;
-    const held = now - k.t0;
-    if (held >= KICK_HOLD_MS) {
-      // keyboard: the kick fires at 2 s without waiting for the key to be released
-      this.keyHold = null;
-      this.deps.view.charge = null;
-      this.deps.kick(k.dir);
-      return;
-    }
-    this.deps.view.charge = held >= CHARGE_START_MS ? { dir: k.dir, progress: (held - CHARGE_START_MS) / (KICK_HOLD_MS - CHARGE_START_MS), armed: false } : null;
+    const c = this.deps.view.charge;
+    if (c && c.fadeAt !== undefined && now - c.fadeAt > TRAIL_FADE_MS) this.deps.view.charge = null;
   }
 
-  /** Arrow / WASD pressed: move now; holding it charges a kick in the same direction. Shift = kick now. */
+  /** Arrow / WASD (auto-repeat walks): one step; with Shift: kick. */
   keyDown(dir: Dir, kickNow: boolean): void {
     this.cancel();
-    if (kickNow) {
-      this.cancelKey();
-      this.deps.kick(dir);
-      return;
-    }
-    this.deps.step(dir);
-    this.keyHold = { dir, t0: performance.now(), armedFired: false };
-  }
-
-  keyUp(dir: Dir): void {
-    if (this.keyHold && this.keyHold.dir === dir) this.cancelKey();
-  }
-
-  private cancelKey(): void {
-    if (!this.keyHold) return;
-    this.keyHold = null;
-    if (!this.hold) this.deps.view.charge = null;
+    if (kickNow) this.deps.kick(dir);
+    else this.deps.step(dir);
   }
 
   /** Stop a tap-to-walk in progress. */

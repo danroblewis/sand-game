@@ -51,6 +51,24 @@ function slidePlanOf(state: GameState): Map<number, Dir> | null {
     return null;
   }
 }
+/** Boxes a driven-box train moves on the next force step (id -> dir), guarded. */
+function forcePlanOf(state: GameState): Map<number, Dir> | null {
+  const fp = coreAny.forcePlan;
+  if (typeof fp !== 'function' || !state.boxes.some((b) => (b as Box & { force?: Dir | null }).force)) return null;
+  try {
+    const r = (fp as (s: GameState) => Map<number, Dir> | Set<number>)(state);
+    if (r instanceof Map) return r;
+    // a Set of ids: every moving box goes the way of the (first) driven box in the set
+    const m = new Map<number, Dir>();
+    const driver = state.boxes.find((b) => r.has(b.id) && (b as Box & { force?: Dir | null }).force);
+    const d = driver ? (driver as Box & { force: Dir }).force : null;
+    if (d) for (const id of r) m.set(id, d);
+    return m;
+  } catch {
+    return null;
+  }
+}
+
 function kickInterval(): number {
   const v = coreAny.KICK_INTERVAL;
   return typeof v === 'number' && v > 0 ? v : 2;
@@ -119,17 +137,20 @@ export interface View {
   lastMovedBoxId?: number | null;
   /** Big maps: pointer near a viewport edge while dragging (-1..1 per axis): camera looks ahead. */
   dragEdge?: { x: number; y: number };
-  /** Hero kick charge (hold a swipe / an arrow): progress 0..1 from 1 s to 2 s, then armed. */
+  /** Hero swipe trail: kick when the drag reaches the kick distance. */
   charge?: HeroCharge | null;
 }
 
 export interface HeroCharge {
   dir: Dir;
-  /** 0 before 1 s, rising to 1 at 2 s. */
-  progress: number;
+  /** Drag length along `dir`, CSS px. */
+  dist: number;
+  /** Kick distance, CSS px. */
+  kickDist: number;
+  /** dist >= kickDist: release kicks. */
   armed: boolean;
-  /** Touch swipe trail in CSS px relative to the canvas (origin -> finger, along the locked axis). */
-  trail?: { ox: number; oy: number; x: number; y: number } | null;
+  /** Set on release: the trail fades out from this time (performance.now ms). */
+  fadeAt?: number;
 }
 
 export function createView(): View {
@@ -354,6 +375,8 @@ export class Renderer {
   private lastState: GameState | null = null;
   /** Last time each conveyor moved a box (performance.now ms). */
   private beltActiveAt = new Map<number, number>();
+  /** Driven-box trains moving on the next force step (set each frame). */
+  private forces: Map<number, Dir> | null = null;
   /** Drawn hero position (grid units) and the speed allowance carried out of a fall. */
   private heroPos: { rx: number; ry: number; carry: number } | null = null;
   /** Most recent pop effect (to merge a group's simultaneous pops into it). */
@@ -703,6 +726,8 @@ export class Renderer {
     const fallPhase = Math.min(1, ((Math.max(0, state.tick - 1) % fallI) + Math.min(1, Math.max(0, view.stepFrac || 0))) / fallI);
     // Kicked boxes slide one cell per KICK_INTERVAL steps: same phase scheme.
     const slides = slidePlanOf(state);
+    // Driven-box trains move one cell per BOX_FALL_INTERVAL steps (fall phase).
+    this.forces = forcePlanOf(state);
     const kickI = kickInterval();
     const slidePhase = Math.min(1, ((Math.max(0, state.tick - 1) % kickI) + Math.min(1, Math.max(0, view.stepFrac || 0))) / kickI);
     this.drawWalls();
@@ -722,16 +747,21 @@ export class Renderer {
       if (held) p.tau = LERP_TAU;
       let tx = b.x;
       let ty = b.y;
-      const slideDir = held || !slides ? undefined : slides.get(b.id);
+      const slideDir = held ? undefined : slides?.get(b.id);
+      const forceDir = held || slideDir ? undefined : this.forces?.get(b.id);
       const rideDir = held || b.frozen > 0 || slideDir ? undefined : plan.get(b.id);
-      const falling = !held && !slideDir && falls !== null && falls.has(b.id);
-      if (rideDir || falling || slideDir) {
+      const falling = !held && !slideDir && !forceDir && falls !== null && falls.has(b.id);
+      if (rideDir || falling || slideDir || forceDir) {
         // Gliding rider / faller / slider: grid position + phase. Continuous across the step
         // because the grid position advances exactly when the phase wraps.
         if (slideDir) {
           const [dx, dy] = DIR_VEC[slideDir];
           tx += dx * slidePhase;
           ty += dy * slidePhase;
+        } else if (forceDir) {
+          const [dx, dy] = DIR_VEC[forceDir];
+          tx += dx * fallPhase;
+          ty += dy * fallPhase;
         } else if (falling) {
           ty += fallPhase;
         } else if (rideDir) {
@@ -742,7 +772,7 @@ export class Renderer {
         if (p.locked) {
           p.rx = tx;
           p.ry = ty;
-          p.carry = 1.6 * (60 / (slideDir ? kickI : falling ? fallI : CONVEYOR_INTERVAL));
+          p.carry = 1.6 * (60 / (slideDir ? kickI : falling || forceDir ? fallI : CONVEYOR_INTERVAL));
           continue;
         }
       } else {
@@ -761,7 +791,7 @@ export class Renderer {
       // Riders/fallers ease on, but may catch up at 1.6x their own speed so a fast fall locks on
       // within a few frames instead of trailing it (no snap: the per-frame move stays bounded).
       // A glide that just ended (landed / blocked) finishes at its own speed, not with a slow ease.
-      const chase = (slideDir ? 1.6 * (60 / kickI) : rideDir ? 1.6 * (60 / CONVEYOR_INTERVAL) : falling ? 1.6 * (60 / fallI) : p.carry) * dt;
+      const chase = (slideDir ? 1.6 * (60 / kickI) : forceDir ? 1.6 * (60 / fallI) : rideDir ? 1.6 * (60 / CONVEYOR_INTERVAL) : falling ? 1.6 * (60 / fallI) : p.carry) * dt;
       const ease = (cur: number, tgt: number) => {
         const d = tgt - cur;
         const e = d * k;
@@ -773,8 +803,8 @@ export class Renderer {
       if (Math.abs(ty - p.ry) < 0.002) p.ry = ty;
       if (p.rx === tx && p.ry === ty) {
         p.tau = LERP_TAU;
-        if (!rideDir && !falling && !slideDir) p.carry = 0;
-        if (rideDir || falling || slideDir) p.locked = true; // eased on: from now on follow it exactly
+        if (!rideDir && !falling && !slideDir && !forceDir) p.carry = 0;
+        if (rideDir || falling || slideDir || forceDir) p.locked = true; // eased on: from now on follow it exactly
       }
     }
 
@@ -788,18 +818,8 @@ export class Renderer {
       const sd = (b as Box & { sliding?: Dir | null }).sliding;
       if (b.state === 'active' && sd) this.drawStreak(b, sd);
     }
-    // Kick charge: the target box pulses while charging and wobbles when armed.
+    // Kick: the target box pulses once the swipe is long enough to kick.
     const kickTarget = this.chargeTarget(state, view);
-    const wob = kickTarget && view.charge?.armed ? this.positions.get(kickTarget.id) : undefined;
-    let wobDx = 0;
-    let wobDy = 0;
-    if (wob && view.charge) {
-      const w = 0.045 * Math.sin(now * 0.045);
-      wobDx = DIR_VEC[view.charge.dir][0] * w + DIR_VEC[view.charge.dir][1] * w * 0.4;
-      wobDy = DIR_VEC[view.charge.dir][1] * w + DIR_VEC[view.charge.dir][0] * w * 0.4;
-      wob.rx += wobDx;
-      wob.ry += wobDy;
-    }
 
     // Draw resting boxes first, then groups, then the selected one, then the dragged one on top.
     let selBox: Box | null = null;
@@ -813,11 +833,7 @@ export class Renderer {
     for (const g of groups) this.drawGroup(g, view, now);
     if (selBox) this.drawBox(selBox, view, now);
     if (dragBox) this.drawBox(dragBox, view, now);
-    if (kickTarget && view.charge && !view.charge.armed && view.charge.progress > 0) this.drawTargetPulse(kickTarget, view.charge.progress, now);
-    if (wob) {
-      wob.rx -= wobDx;
-      wob.ry -= wobDy;
-    }
+    if (kickTarget) this.drawTargetPulse(kickTarget, now);
     if (state.hero) this.drawHero(state, view, now, dt, heroWillFall(state, falls) ? fallPhase : -1, fallI);
     if (state.hero && view.charge) this.drawCharge(state, view.charge, now);
 
@@ -1165,20 +1181,20 @@ export class Renderer {
   private chargeTarget(state: GameState, view: View): Box | undefined {
     const c = view.charge;
     const h = state.hero;
-    if (!c || !h || c.progress <= 0) return undefined;
+    if (!c || !h || !c.armed || c.fadeAt !== undefined) return undefined;
     const [dx, dy] = DIR_VEC[c.dir];
     const x = h.x + dx;
     const y = h.y + dy;
     return state.boxes.find((b) => b.state === 'active' && b.frozen === 0 && b.cells.some((q) => b.x + q.x === x && b.y + q.y === y));
   }
 
-  private drawTargetPulse(b: Box, progress: number, now: number): void {
+  private drawTargetPulse(b: Box, now: number): void {
     const p = this.positions.get(b.id);
     const cs = this.cellSize;
     const path = loopsPath(shapeOutline(b.shape, b.cells), this.originX + (p ? p.rx : b.x) * cs, this.originY + (p ? p.ry : b.y) * cs, cs, cs * 0.06, Math.min(cs * 0.18, cs * 0.44));
     const ctx = this.ctx;
     ctx.save();
-    ctx.globalAlpha = (0.25 + 0.45 * progress) * (0.6 + 0.4 * Math.sin(now * 0.012));
+    ctx.globalAlpha = 0.45 * (0.6 + 0.4 * Math.sin(now * 0.012));
     ctx.strokeStyle = '#ffffff';
     ctx.shadowColor = boxGlow(b.color);
     ctx.shadowBlur = cs * 0.3;
@@ -1187,70 +1203,54 @@ export class Renderer {
     ctx.restore();
   }
 
-  /** Charge arrow from the hero (grows 1 s..2 s, bright when armed) and the swipe trail. */
+  /**
+   * Swipe trail from the hero along the locked direction, as long as the finger has dragged:
+   * translucent neutral below the kick distance; amber with an arrowhead at/after it; a faint tick
+   * marks the kick distance. Fades out briefly after release.
+   */
   private drawCharge(state: GameState, c: HeroCharge, now: number): void {
+    const fade = c.fadeAt !== undefined ? Math.max(0, 1 - (now - c.fadeAt) / 150) : 1;
+    if (fade <= 0 || c.dist <= 0) return;
     const ctx = this.ctx;
     const cs = this.cellSize;
     const dpr = this.dpr;
-    // swipe trail (screen space)
-    if (c.trail) {
-      const t = c.trail;
-      ctx.save();
-      ctx.lineCap = 'round';
-      ctx.strokeStyle = c.armed ? 'rgba(245,200,76,0.7)' : 'rgba(255,255,255,0.35)';
-      ctx.lineWidth = 6 * dpr;
-      ctx.beginPath();
-      ctx.moveTo(t.ox * dpr, t.oy * dpr);
-      ctx.lineTo(t.x * dpr, t.y * dpr);
-      ctx.stroke();
-      ctx.fillStyle = 'rgba(255,255,255,0.6)';
-      ctx.beginPath();
-      ctx.arc(t.ox * dpr, t.oy * dpr, 7 * dpr, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = c.armed ? '#f5c84c' : 'rgba(255,255,255,0.85)';
-      ctx.beginPath();
-      ctx.arc(t.x * dpr, t.y * dpr, 9 * dpr, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
-    }
-    if (c.progress <= 0 && !c.armed) return;
     const hp = this.heroPos;
     const h = state.hero!;
     const cx = this.originX + ((hp ? hp.rx : h.x) + 0.5) * cs;
     const cy = this.originY + ((hp ? hp.ry : h.y) + 0.5) * cs;
-    const k = c.armed ? 1 : c.progress;
-    const len = cs * (0.5 + 1.1 * k) * (c.armed ? 1 + 0.05 * Math.sin(now * 0.02) : 1);
+    const x0 = cs * 0.38; // start at the hero's edge
+    const len = c.dist * dpr;
+    const x1 = x0 + len;
+    const kx = x0 + c.kickDist * dpr;
+    const w = cs * 0.2;
     ctx.save();
     ctx.translate(cx, cy);
     ctx.rotate(DIR_ANGLE[c.dir]);
-    const w = cs * 0.13;
-    const head = cs * 0.32;
-    const x0 = cs * 0.4;
-    const x1 = x0 + len;
+    ctx.globalAlpha = 0.35 * fade;
+    ctx.fillStyle = c.armed ? '#f5c84c' : '#e6ecf8';
+    const head = c.armed ? Math.min(cs * 0.42, len) : 0;
     ctx.beginPath();
     ctx.moveTo(x0, -w / 2);
     ctx.lineTo(x1 - head, -w / 2);
-    ctx.lineTo(x1 - head, -head * 0.75);
-    ctx.lineTo(x1, 0);
-    ctx.lineTo(x1 - head, head * 0.75);
+    if (head > 0) {
+      ctx.lineTo(x1 - head, -head * 0.7);
+      ctx.lineTo(x1, 0);
+      ctx.lineTo(x1 - head, head * 0.7);
+    }
     ctx.lineTo(x1 - head, w / 2);
     ctx.lineTo(x0, w / 2);
     ctx.closePath();
-    if (c.armed) {
-      ctx.shadowColor = 'rgba(245,200,76,0.9)';
-      ctx.shadowBlur = cs * 0.35;
-      ctx.fillStyle = '#f5c84c';
-    } else {
-      // filling: dim body, bright fill up to the progress
-      const g = ctx.createLinearGradient(x0, 0, x1, 0);
-      const f = Math.max(0.001, Math.min(0.999, k));
-      g.addColorStop(0, 'rgba(255,255,255,0.85)');
-      g.addColorStop(f, 'rgba(255,255,255,0.85)');
-      g.addColorStop(Math.min(1, f + 0.001), 'rgba(255,255,255,0.22)');
-      g.addColorStop(1, 'rgba(255,255,255,0.22)');
-      ctx.fillStyle = g;
-    }
     ctx.fill();
+    // kick-distance marker (only while dragging)
+    if (c.fadeAt === undefined) {
+      ctx.globalAlpha = c.armed ? 0.35 : 0.25;
+      ctx.strokeStyle = c.armed ? '#f5c84c' : '#e6ecf8';
+      ctx.lineWidth = Math.max(1, 1.5 * dpr);
+      ctx.beginPath();
+      ctx.moveTo(kx, -cs * 0.32);
+      ctx.lineTo(kx, cs * 0.32);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
@@ -1534,6 +1534,123 @@ export class Renderer {
     }
 
     this.drawThaw(b, path, view, now, lw);
+    this.drawForce(b, px, py, now);
+  }
+
+  /**
+   * Driven box: an arrow on its face pointing in `force` (faint under ice), a nozzle on the back
+   * edge with a soft glow; exhaust while its train moves; a brighter pulsing glow and a pressure
+   * line on the front edge while it is pressing.
+   */
+  private drawForce(b: Box, px: number, py: number, now: number): void {
+    const force = (b as Box & { force?: Dir | null }).force;
+    if (!force) return;
+    const pressing = !!(b as Box & { pressing?: boolean }).pressing && b.frozen === 0;
+    const moving = !!this.forces?.has(b.id) && b.frozen === 0;
+    const ctx = this.ctx;
+    const cs = this.cellSize;
+    const [fx, fy] = DIR_VEC[force];
+    const own = new Set(b.cells.map((c) => `${c.x},${c.y}`));
+    // face arrow on the cell nearest the centroid
+    let mx = 0;
+    let my = 0;
+    for (const c of b.cells) {
+      mx += c.x + 0.5;
+      my += c.y + 0.5;
+    }
+    mx /= b.cells.length;
+    my /= b.cells.length;
+    let best = b.cells[0];
+    let bd = Infinity;
+    for (const c of b.cells) {
+      const d = (c.x + 0.5 - mx) ** 2 + (c.y + 0.5 - my) ** 2;
+      if (d < bd) {
+        bd = d;
+        best = c;
+      }
+    }
+    const ax = px + (best.x + 0.5) * cs;
+    const ay = py + (best.y + 0.5) * cs;
+    ctx.save();
+    ctx.translate(ax, ay);
+    ctx.rotate(DIR_ANGLE[force]);
+    ctx.globalAlpha = b.frozen > 0 ? 0.3 : 0.42;
+    ctx.strokeStyle = b.frozen > 0 ? ICE_TEXT : '#ffffff';
+    ctx.lineWidth = Math.max(2, cs * 0.07);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-cs * 0.12, -cs * 0.17);
+    ctx.lineTo(cs * 0.08, 0);
+    ctx.lineTo(-cs * 0.12, cs * 0.17);
+    ctx.stroke();
+    ctx.restore();
+    if (b.frozen > 0) return;
+
+    // back edge: cells with no own cell behind them (opposite to force); nozzle on the middle one
+    const backs = b.cells.filter((c) => !own.has(`${c.x - fx},${c.y - fy}`));
+    const back = backs[Math.floor(backs.length / 2)];
+    const nx = px + (back.x + 0.5 - fx * 0.5) * cs; // centre of the back edge
+    const ny = py + (back.y + 0.5 - fy * 0.5) * cs;
+    const pulse = 0.5 + 0.5 * Math.sin(now * 0.004);
+    ctx.save();
+    ctx.translate(nx, ny);
+    ctx.rotate(DIR_ANGLE[force]);
+    // local frame: +x = force direction, the nozzle points to -x
+    const glowR = cs * (pressing ? 0.55 : 0.4);
+    const g = ctx.createRadialGradient(-cs * 0.12, 0, 0, -cs * 0.12, 0, glowR);
+    const a = pressing ? 0.35 + 0.25 * pulse : moving ? 0.35 : 0.16;
+    g.addColorStop(0, colorRGBA(b.color, a));
+    g.addColorStop(1, colorRGBA(b.color, 0));
+    ctx.fillStyle = g;
+    ctx.fillRect(-cs * 0.12 - glowR, -glowR, glowR * 2, glowR * 2);
+    // nozzle: a small trapezoid sticking out behind the box
+    ctx.fillStyle = boxStroke(b.color);
+    ctx.beginPath();
+    ctx.moveTo(cs * 0.04, -cs * 0.14);
+    ctx.lineTo(cs * 0.04, cs * 0.14);
+    ctx.lineTo(-cs * 0.13, cs * 0.2);
+    ctx.lineTo(-cs * 0.13, -cs * 0.2);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = pressing ? `rgba(255,245,210,${0.6 + 0.4 * pulse})` : 'rgba(255,255,255,0.35)';
+    ctx.fillRect(-cs * 0.15, -cs * 0.15, cs * 0.05, cs * 0.3);
+    // exhaust while moving: streaks flowing backwards
+    if (moving) {
+      ctx.lineCap = 'round';
+      for (let i = 0; i < 4; i++) {
+        const ph = ((now * 0.004 + i / 4) % 1 + 1) % 1;
+        const x = -cs * (0.2 + 0.55 * ph);
+        const off = (i - 1.5) * cs * 0.08;
+        ctx.globalAlpha = 0.55 * (1 - ph);
+        ctx.strokeStyle = i % 2 ? '#ffffff' : colorHex(b.color);
+        ctx.lineWidth = Math.max(1.5, cs * 0.035);
+        ctx.beginPath();
+        ctx.moveTo(x, off);
+        ctx.lineTo(x - cs * 0.14, off);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+    // pressing: thin pressure highlight along the front edge
+    if (pressing) {
+      const fronts = b.cells.filter((c) => !own.has(`${c.x + fx},${c.y + fy}`));
+      ctx.save();
+      ctx.globalAlpha = 0.45 + 0.35 * pulse;
+      ctx.strokeStyle = '#fff3c4';
+      ctx.lineWidth = Math.max(1.5, cs * 0.04);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      for (const c of fronts) {
+        const ex = px + (c.x + 0.5 + fx * 0.44) * cs;
+        const ey = py + (c.y + 0.5 + fy * 0.44) * cs;
+        ctx.moveTo(ex - fy * cs * 0.32, ey - fx * cs * 0.32);
+        ctx.lineTo(ex + fy * cs * 0.32, ey + fx * cs * 0.32);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   private strokeSelected(color: ColorId, path: Path2D, lw: number): void {
@@ -1695,6 +1812,7 @@ export class Renderer {
     ctx.lineWidth = lw;
     ctx.stroke(union);
 
+    for (const b of members) this.drawForce(b, bx + b.x * cs, by + b.y * cs, now);
     // Per-piece selection / hover / thaw so the player sees which piece they act on.
     for (const b of members) {
       const sel = b.id === view.selectedBoxId;

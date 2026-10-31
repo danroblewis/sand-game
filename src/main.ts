@@ -103,6 +103,7 @@ if (new URLSearchParams(location.search).get('audio') === '1') toggleAudioDiag(t
 let flowThisFrame = 0;
 let popsThisFrame = 0;
 let heroFoot: 0 | 1 = 0;
+let lastThrustAt = 0;
 const view = createView();
 
 /** What is being played: a handmade campaign level or a generated one. */
@@ -357,6 +358,15 @@ function playSound(ev: GameState['events'][number]): void {
     case 'heroPushed':
       sfx.play('push');
       break;
+    case 'forcePushed': {
+      // trains can push every few steps: rate-limit the puff
+      const t = performance.now();
+      if (t - lastThrustAt > 180) {
+        lastThrustAt = t;
+        sfx.play('thrust');
+      }
+      break;
+    }
     case 'heroKicked':
       sfx.play('whoosh');
       break;
@@ -482,7 +492,7 @@ attachKeyboard({
   getState: () => state,
   view,
   isBlocked: blocked,
-  actions: { restart, next, prev, isRandom: () => mode.kind === 'random', heroMove: heroKey, heroKeyDown: (d, kick) => heroInput.keyDown(d, kick), heroKeyUp: (d) => heroInput.keyUp(d), undo, overview: toggleOverview, menu: () => hud.openMenu() },
+  actions: { restart, next, prev, isRandom: () => mode.kind === 'random', heroMove: heroKey, heroKeyDown: (d, kick) => heroInput.keyDown(d, kick), undo, overview: toggleOverview, menu: () => hud.openMenu() },
 });
 const heroInput: HeroInput = new HeroInput({
   canvas: hud.canvas,
@@ -491,8 +501,8 @@ const heroInput: HeroInput = new HeroInput({
   step: heroStep,
   kick: heroKick,
   view,
-  onArmed: () => {
-    sfx.play('armed');
+  onThreshold: (armed) => {
+    sfx.play('armed', { foot: armed ? 1 : 0 });
     haptics.pulse('tick');
   },
   isBlocked: blocked,

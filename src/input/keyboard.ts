@@ -11,10 +11,9 @@ export interface KeyboardActions {
   isRandom?: () => boolean;
   /** Hero levels: one hero move (arrows / WASD). */
   heroMove?: (dir: Dir) => void;
-  /** Hero levels: key pressed (move now; holding charges a kick; `kick` = Shift: kick now). */
+  /** Hero levels: key pressed (one step; `kick` = Shift: kick). */
   heroKeyDown?: (dir: Dir, kick: boolean) => void;
-  /** Hero levels: key released (cancels a charge). */
-  heroKeyUp?: (dir: Dir) => void;
+
   /** Hero levels: undo the last hero move (Z / U). */
   undo?: () => void;
   /** Big maps: toggle the overview (O). */
@@ -110,8 +109,8 @@ export function attachKeyboard(deps: KeyboardDeps): () => void {
       const hd = HERO_KEYS[e.key];
       if (hd) {
         e.preventDefault();
-        // Auto-repeat is ignored: holding an arrow charges a kick instead of walking on.
-        if (e.repeat) return;
+        // Auto-repeat walks; Shift+arrow kicks (not repeated).
+        if (e.repeat && e.shiftKey) return;
         if (actions.heroKeyDown) actions.heroKeyDown(hd, e.shiftKey);
         else actions.heroMove?.(hd);
         return;
@@ -175,14 +174,6 @@ export function attachKeyboard(deps: KeyboardDeps): () => void {
     e.preventDefault();
   };
 
-  const onKeyUp = (e: KeyboardEvent) => {
-    const hd = HERO_KEYS[e.key];
-    if (hd && getState().hero) actions.heroKeyUp?.(hd);
-  };
   window.addEventListener('keydown', onKey);
-  window.addEventListener('keyup', onKeyUp);
-  return () => {
-    window.removeEventListener('keydown', onKey);
-    window.removeEventListener('keyup', onKeyUp);
-  };
+  return () => window.removeEventListener('keydown', onKey);
 }
