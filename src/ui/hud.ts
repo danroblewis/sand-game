@@ -2,6 +2,10 @@
 import type { Dir, LevelDef } from '../core/types';
 import { loadProgress, recordRandomSolve, saveProgress, type Progress, type RandomMode } from './progress';
 import { chapterRanges } from './chapters';
+import { chapterStates, freePlayUnlocked, FREE_PLAY_AFTER, completedCount, isCompleted as recCompleted, levelLock, totalStars } from '../progress/model';
+import { parFor } from '../levels/par';
+import type { CeremonyView, FanfareView, MapLevelView, MapModel, SkinProgression } from '../render/themes/progression/types';
+import { slateProgression } from '../render/themes/progression/slate';
 import { hapticsBackend } from '../audio/haptics';
 
 export interface HudHandlers {
@@ -14,7 +18,7 @@ export interface HudHandlers {
   onPlayRandom: (difficulty: number) => void;
   onPlayDaily: (difficulty: number) => void;
   /** `gravity` is set when the typed code names it (gen-7g-…); otherwise the picker mode decides. */
-  onPlaySeed: (difficulty: number, seed: number, gravity?: boolean, hero?: boolean) => void;
+  onPlaySeed: (difficulty: number, seed: number, gravity?: boolean, hero?: boolean, big?: boolean) => void;
   /** Hero levels: undo the last move. */
   onUndo?: () => void;
   /** Hero levels: one d-pad step. */
@@ -31,7 +35,12 @@ export interface HudHandlers {
   onOverview?: () => void;
   /** The gear menu opened / closed (pause input). */
   onMenu?: (open: boolean) => void;
+  /** Theme picked in the menu ('auto' or a skin id). */
+  onTheme?: (id: string) => void;
 }
+
+/** Overrides the lock rules (debug / tests: ?unlock=all). */
+export const lockBypass = { all: false };
 
 export type WinKind = 'next' | 'last' | 'random';
 
@@ -51,10 +60,13 @@ const ICONS = {
   soundOff: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/><path d="M16 9.5l5 5M21 9.5l-5 5"/></svg>',
   gear: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M2.8 12h2.4M18.8 12h2.4M5.5 5.5l1.7 1.7M16.8 16.8l1.7 1.7M5.5 18.5l1.7-1.7M16.8 7.2l1.7-1.7"/><circle cx="12" cy="12" r="6.4"/></svg>',
   map: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 6.5l5.5-2 6 2 5.5-2v13l-5.5 2-6-2-5.5 2z"/><path d="M9 4.5v13M15 6.5v13"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10.5" width="14" height="10" rx="2.2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></svg>',
   check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>',
   dice: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="9" cy="9" r="1.1" fill="currentColor"/><circle cx="15" cy="15" r="1.1" fill="currentColor"/><circle cx="15" cy="9" r="1.1" fill="currentColor"/><circle cx="9" cy="15" r="1.1" fill="currentColor"/></svg>',
   sun: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg>',
 };
+
+const LOCK_ICON = ICONS.lock;
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, html?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -88,13 +100,15 @@ export function dailyLabel(seed: number): string {
 }
 
 /** Parse what a player types/pastes into the seed field: "48213", "#48213", "gen-7-48213". */
-export function parseSeedInput(text: string): { seed: number; difficulty?: number; gravity?: boolean; hero?: boolean } | null {
+export function parseSeedInput(text: string): { seed: number; difficulty?: number; gravity?: boolean; hero?: boolean; big?: boolean } | null {
   const t = text.trim();
-  const g = /^#?gen-(\d{1,2})(g?)(h?)-(\d{1,10})$/i.exec(t);
+  const g = /^#?gen-(\d{1,2})(x?)(g?)(h?)-(\d{1,10})$/i.exec(t);
   if (g) {
     const d = Number(g[1]);
-    const seed = Number(g[4]);
-    if (d >= 1 && d <= 10 && seed <= 0x7fffffff) return { seed, difficulty: d, gravity: g[2] !== '', hero: g[3] !== '' };
+    const seed = Number(g[5]);
+    const big = g[2] !== '';
+    // an Expedition (x) is always a hero level
+    if (d >= 1 && d <= 10 && seed <= 0x7fffffff) return { seed, difficulty: d, gravity: g[3] !== '', hero: g[4] !== '' || big, big };
     return null;
   }
   const m = /^#?\s*(\d{1,10})$/.exec(t);
@@ -124,12 +138,30 @@ export class Hud {
   private modeIcons!: HTMLElement;
   private menu!: HTMLElement;
   private menuTitle!: HTMLElement;
+  private themeRow!: HTMLElement;
   private nextBtn: HTMLButtonElement;
   private picker: HTMLElement;
   private pickerGrid: HTMLElement;
   private diffSeg: HTMLElement;
   private modeSeg!: HTMLElement;
   private heroToggle!: HTMLButtonElement;
+  private bigToggle!: HTMLButtonElement;
+  private newBtn!: HTMLButtonElement;
+  private mapOverlay!: HTMLElement;
+  private mapHost!: HTMLElement;
+  private mapStatus!: HTMLElement;
+  private mapFree!: HTMLElement;
+  private pickerStatus!: HTMLElement;
+  private ceremonyOverlay!: HTMLElement;
+  private ceremonyHost!: HTMLElement;
+  private fanfareHost!: HTMLElement;
+  private fanfareCleanup: (() => void) | null = null;
+  private ceremonyCleanup: (() => void) | null = null;
+  private statusTimer = 0;
+  /** Themed progression screens of the active skin. */
+  skinProgression: SkinProgression = slateProgression;
+  /** Active skin id (styles the map / fanfare / ceremony overlays). */
+  skinId = 'slate';
   private randomSection!: HTMLElement;
   private diffValue: HTMLElement;
   private diffSolved: HTMLElement;
@@ -153,6 +185,8 @@ export class Hud {
   randomMode: RandomMode;
   /** Random levels in hero (Pusher) mode. */
   randomHero: boolean;
+  /** Random levels as big maps (Expedition; implies Pusher). */
+  randomBig: boolean;
 
   constructor(root: HTMLElement, private handlers: HudHandlers) {
     this.root = root;
@@ -160,6 +194,7 @@ export class Hud {
     this.difficulty = this.progress.difficulty ?? 5;
     this.randomMode = this.progress.randomMode;
     this.randomHero = this.progress.randomHero;
+    this.randomBig = this.progress.randomBig;
     root.innerHTML = '';
     root.classList.add('app');
 
@@ -273,9 +308,9 @@ export class Hud {
     };
     this.prevBtn = button('btn-prev', ICONS.prev, 'Previous', closeThen(() => handlers.onPrev()));
     const restart = button('btn-restart', ICONS.restart, 'Restart', closeThen(() => handlers.onRestart()));
-    const levelsBtn = button('btn-levels', ICONS.grid, 'Levels', closeThen(() => this.openPicker()));
+    const levelsBtn = button('btn-levels', ICONS.grid, 'Levels', closeThen(() => this.openMap()));
     this.nextBtn = button('btn-next', ICONS.next, 'Next', closeThen(() => handlers.onNext()));
-    const newBtn = button('btn-new', ICONS.dice, 'New level', closeThen(() => handlers.onNewRandom()));
+    const newBtn = (this.newBtn = button('btn-new', ICONS.dice, 'New level', closeThen(() => handlers.onNewRandom())));
     this.undoBtn = button('btn-undo', ICONS.undo, 'Undo', closeThen(() => handlers.onUndo?.()));
     this.undoBtn.disabled = true;
     const resume = button('btn-primary btn-resume', ICONS.next, 'Resume', () => this.closeMenu());
@@ -298,7 +333,11 @@ export class Hud {
     // Level navigation sits low in the menu, away from Resume, so it is hard to hit by accident.
     const nav = el('div', 'menu-nav');
     nav.append(this.prevBtn, this.nextBtn, newBtn);
-    card.append(head, resume, actions, toggles, nav, this.hint);
+    // Theme: Auto (level / chapter default) or a fixed skin; filled by setThemes().
+    this.themeRow = el('div', 'menu-theme');
+    this.themeRow.setAttribute('role', 'radiogroup');
+    this.themeRow.setAttribute('aria-label', 'Theme');
+    card.append(head, resume, actions, toggles, this.themeRow, nav, this.hint);
     this.renderSound();
     this.menu.append(card);
     this.menu.addEventListener('click', (e) => {
@@ -309,7 +348,9 @@ export class Hud {
     this.picker = el('div', 'overlay picker hidden');
     const pcard = el('div', 'card picker-card');
     const phead = el('div', 'picker-head');
-    phead.append(el('h2', '', 'Levels'));
+    phead.append(el('h2', '', 'All levels'));
+    const toMap = button('btn-ghost btn-to-map', ICONS.map, 'Map', () => this.openMap());
+    phead.append(toMap);
     const close = el('button', 'btn btn-close', '&times;');
     close.type = 'button';
     close.setAttribute('aria-label', 'Close');
@@ -319,7 +360,7 @@ export class Hud {
 
     const rsec = el('section', 'random-section');
     const rhead = el('div', 'section-head');
-    rhead.append(el('h3', '', 'Random'));
+    rhead.append(el('h3', '', 'Free Play'));
     const dl = el('div', 'diff-label');
     dl.append('Difficulty ');
     this.diffValue = el('b', 'diff-value');
@@ -359,15 +400,22 @@ export class Hud {
     this.heroToggle.type = 'button';
     this.heroToggle.title = 'Random levels with a character who pushes the boxes';
     this.heroToggle.addEventListener('click', () => this.setRandomHero(!this.randomHero));
+    // Expedition: big maps with the hero (implies Pusher).
+    this.bigToggle = el('button', 'hero-toggle big-toggle', `${ICONS.map}<span>Expedition</span><i class="switch" aria-hidden="true"></i>`);
+    this.bigToggle.type = 'button';
+    this.bigToggle.title = 'Big maps to explore (with the Pusher)';
+    this.bigToggle.addEventListener('click', () => this.setRandomBig(!this.randomBig));
     const modeRow = el('div', 'mode-row');
-    modeRow.append(this.modeSeg, this.heroToggle);
+    modeRow.append(this.modeSeg, this.heroToggle, this.bigToggle);
     const ractions = el('div', 'random-actions');
     const playRandom = button('btn-primary btn-play-random', ICONS.dice, 'Play random', () => {
       this.closePicker();
+      this.closeMap();
       handlers.onPlayRandom(this.difficulty);
     });
     this.dailyBtn = button('btn-daily', ICONS.sun, 'Daily', () => {
       this.closePicker();
+      this.closeMap();
       handlers.onPlayDaily(this.difficulty);
     });
     ractions.append(playRandom, this.dailyBtn);
@@ -394,15 +442,19 @@ export class Hud {
       if (parsed.difficulty) this.setDifficulty(parsed.difficulty);
       this.seedInput.blur();
       this.closePicker();
-      handlers.onPlaySeed(this.difficulty, parsed.seed, parsed.gravity, parsed.hero);
+      this.closeMap();
+      handlers.onPlaySeed(this.difficulty, parsed.seed, parsed.gravity, parsed.hero, parsed.big);
     });
-    rsec.append(rhead, modeRow, this.diffSeg, ractions, seedForm, this.seedError);
+    const bigNote = el('p', 'big-note', 'Expeditions are big: building one can take a couple of seconds at high difficulty.');
+    rsec.append(rhead, modeRow, this.diffSeg, ractions, seedForm, this.seedError, bigNote);
     this.randomSection = rsec;
 
     const csec = el('section', 'campaign-section');
     const chead = el('div', 'section-head');
     chead.append(el('h3', '', 'Campaign'));
-    csec.append(chead, this.pickerGrid);
+    this.pickerStatus = el('div', 'map-status');
+    this.pickerStatus.setAttribute('role', 'status');
+    csec.append(chead, this.pickerStatus, this.pickerGrid);
 
     pcard.append(phead, csec, rsec);
     this.picker.append(pcard);
@@ -410,31 +462,46 @@ export class Hud {
       if (e.target === this.picker) this.closePicker();
     });
 
-    // ----- win overlay -----
+    // ----- win overlay: the skin's fanfare -----
     this.win = el('div', 'overlay win hidden');
-    const wcard = el('div', 'card win-card');
-    wcard.append(el('h2', 'win-title', 'Solved!'));
+    this.fanfareHost = el('div', 'card win-card');
+    this.win.append(this.fanfareHost);
     this.winMoves = el('p', 'win-moves');
-    const wbtns = el('div', 'win-buttons');
-    this.winSecondary = button('btn-ghost', ICONS.restart, 'Replay', () => {
-      if (this.winKind === 'random') {
-        this.hideWin();
-        this.openPicker();
-      } else handlers.onRestart();
-    });
-    this.winPrimary = button('btn-primary', ICONS.next, 'Next level', () => {
-      if (this.winKind === 'last') {
-        this.hideWin();
-        this.openPicker();
-      } else if (this.winKind === 'random') handlers.onNewRandom();
-      else handlers.onNext();
-    });
-    wbtns.append(this.winSecondary, this.winPrimary);
-    wcard.append(this.winMoves, wbtns);
-    this.win.append(wcard);
+    this.winPrimary = el('button');
+    this.winSecondary = el('button');
     this.win.addEventListener('click', (e) => {
       if (e.target === this.win) this.hideWin();
     });
+
+    // ----- level map (the skin's map + Free Play) -----
+    this.mapOverlay = el('div', 'overlay levelmap hidden');
+    this.mapOverlay.setAttribute('role', 'dialog');
+    this.mapOverlay.setAttribute('aria-label', 'Level map');
+    const mcard = el('div', 'card map-card');
+    const mhead = el('div', 'picker-head map-head');
+    mhead.append(el('h2', '', 'Levels'));
+    const allBtn = button('btn-ghost btn-all-levels', ICONS.grid, 'All levels', () => this.openPicker());
+    const mclose = el('button', 'btn btn-close', '&times;');
+    mclose.type = 'button';
+    mclose.setAttribute('aria-label', 'Close');
+    mclose.addEventListener('click', () => this.closeMap());
+    mhead.append(allBtn, mclose);
+    this.mapStatus = el('div', 'map-status');
+    this.mapStatus.setAttribute('role', 'status');
+    this.mapHost = el('div', 'map-host');
+    this.mapFree = el('section', 'freeplay');
+    mcard.append(mhead, this.mapStatus, this.mapHost, this.mapFree);
+    this.mapOverlay.append(mcard);
+    this.mapOverlay.addEventListener('click', (e) => {
+      if (e.target === this.mapOverlay) this.closeMap();
+    });
+
+    // ----- unlock ceremony -----
+    this.ceremonyOverlay = el('div', 'overlay ceremony hidden');
+    this.ceremonyOverlay.setAttribute('role', 'dialog');
+    this.ceremonyOverlay.setAttribute('aria-label', 'Unlocked');
+    this.ceremonyHost = el('div', 'card ceremony-card');
+    this.ceremonyOverlay.append(this.ceremonyHost);
 
     // ----- "building level" overlay -----
     this.building = el('div', 'overlay building hidden');
@@ -444,7 +511,7 @@ export class Hud {
     bcard.append(this.buildingText);
     this.building.append(bcard);
 
-    root.append(top, this.stage, this.menu, this.picker, this.win, this.building);
+    root.append(top, this.stage, this.menu, this.mapOverlay, this.picker, this.win, this.ceremonyOverlay, this.building);
 
     window.addEventListener(
       'keydown',
@@ -455,11 +522,20 @@ export class Hud {
           this.closeMenu();
           return;
         }
+        if (this.ceremonyShown) {
+          if (e.key === 'Escape' || e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            (this.ceremonyHost.querySelector('.cer-continue') as HTMLButtonElement | null)?.click();
+          }
+          return;
+        }
         if (!this.pickerOpen) return;
         if (e.key === 'Escape') {
           e.preventDefault();
           e.stopImmediatePropagation();
-          this.closePicker();
+          if (!this.picker.classList.contains('hidden')) this.closePicker();
+          else this.closeMap();
         }
       },
       true,
@@ -486,13 +562,53 @@ export class Hud {
     this.handlers.onMenu?.(false);
   }
 
+  /** Fill the menu's theme picker (Auto + each skin). */
+  setThemes(skins: { id: string; name: string }[]): void {
+    this.themeRow.innerHTML = '';
+    this.themeRow.append(el('span', 'menu-theme-label', 'Theme'));
+    for (const t of [{ id: 'auto', name: 'Auto' }, ...skins]) {
+      const b = el('button', 'theme-btn', t.name);
+      b.type = 'button';
+      b.dataset.theme = t.id;
+      b.setAttribute('role', 'radio');
+      b.addEventListener('click', () => this.setTheme(t.id));
+      this.themeRow.append(b);
+    }
+    this.renderTheme();
+  }
+
+  /** Pick a theme ('auto' or a skin id): stored, and reported to the app. */
+  setTheme(id: string): void {
+    this.progress.theme = id;
+    saveProgress(this.progress);
+    this.renderTheme();
+    this.handlers.onTheme?.(id);
+  }
+
+  private renderTheme(): void {
+    for (const b of Array.from(this.themeRow.querySelectorAll('.theme-btn')) as HTMLElement[]) {
+      const on = b.dataset.theme === (this.progress.theme || 'auto');
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-checked', String(on));
+    }
+  }
+
   /** Big maps: show the overview button in the top bar. */
   setBigMap(on: boolean): void {
     this.root.classList.toggle('bigmap', on);
   }
 
+  /** True while the level map, the flat grid or a ceremony covers the board. */
   get pickerOpen(): boolean {
-    return !this.picker.classList.contains('hidden');
+    return !this.picker.classList.contains('hidden') || !this.mapOverlay.classList.contains('hidden') || this.ceremonyShown;
+  }
+
+  get mapOpen(): boolean {
+    return !this.mapOverlay.classList.contains('hidden');
+  }
+
+  get ceremonyShown(): boolean {
+    return !this.ceremonyOverlay.classList.contains('hidden');
   }
 
   /** True while a level is being generated. */
@@ -502,6 +618,7 @@ export class Hud {
 
   setLevels(levels: LevelDef[]): void {
     this.levels = levels;
+    this.renderFreePlay();
   }
 
   setDailySeed(seed: number): void {
@@ -523,6 +640,13 @@ export class Hud {
     this.renderDifficulty();
   }
 
+  setRandomBig(on: boolean): void {
+    this.randomBig = on;
+    this.progress.randomBig = on;
+    saveProgress(this.progress);
+    this.renderDifficulty();
+  }
+
   setRandomMode(m: RandomMode): void {
     this.randomMode = m;
     this.progress.randomMode = m;
@@ -531,8 +655,13 @@ export class Hud {
   }
 
   private renderDifficulty(): void {
-    this.heroToggle.classList.toggle('on', this.randomHero);
-    this.heroToggle.setAttribute('aria-pressed', String(this.randomHero));
+    // Expedition implies Pusher: the Pusher switch shows on and is fixed while Expedition is on.
+    this.heroToggle.classList.toggle('on', this.randomHero || this.randomBig);
+    this.heroToggle.setAttribute('aria-pressed', String(this.randomHero || this.randomBig));
+    this.heroToggle.disabled = this.randomBig;
+    this.bigToggle.classList.toggle('on', this.randomBig);
+    this.bigToggle.setAttribute('aria-pressed', String(this.randomBig));
+    this.randomSection.classList.toggle('big', this.randomBig);
     for (const b of Array.from(this.modeSeg.children) as HTMLElement[]) {
       const on = b.dataset.mode === this.randomMode;
       b.classList.toggle('on', on);
@@ -576,6 +705,7 @@ export class Hud {
     this.lastMoves = -1;
     this.setMoves(0);
     this.hideWin();
+    this.renderFreePlay();
   }
 
   /** Show a campaign level. */
@@ -586,7 +716,7 @@ export class Hud {
     this.levelName.textContent = level.name;
     this.levelName.classList.toggle('done', this.isCompleted(level.id));
     this.prevBtn.disabled = index <= 0;
-    this.nextBtn.disabled = index >= this.levels.length - 1;
+    this.nextBtn.disabled = index >= this.levels.length - 1 || !this.levelUnlocked(index + 1);
     this.common(level);
     this.progress.last = level.id;
     saveProgress(this.progress);
@@ -594,7 +724,9 @@ export class Hud {
 
   /** Show a generated level: "Random 7 · #48213", "Random 7g · #48213" (gravity) or "Daily 2026-10-30 · 5". */
   setRandomLevel(level: LevelDef, difficulty: number, seed: number): void {
-    const dl = `${difficulty}${level.boxGravity ? 'g' : ''}${level.hero ? 'h' : ''}`;
+    const camera = (level as { camera?: string }).camera;
+    const big = !!camera && camera !== 'fit';
+    const dl = `${difficulty}${big ? 'x' : ''}${level.boxGravity ? 'g' : ''}${level.hero ? 'h' : ''}`;
     this.index = -1;
     this.root.classList.add('random');
     const daily = seed === this.dailySeed;
@@ -636,15 +768,49 @@ export class Hud {
   }
 
   isCompleted(id: string): boolean {
-    return this.progress.completed.includes(id);
+    return recCompleted(this.progress, id);
   }
 
-  markCompleted(id: string): void {
-    if (!this.isCompleted(id)) {
-      this.progress.completed.push(id);
-      saveProgress(this.progress);
-    }
+  /** Whether campaign level `index` is playable (lock rules, unless bypassed). */
+  levelUnlocked(index: number): boolean {
+    return lockBypass.all || levelLock(this.progress, this.levels, index).unlocked;
+  }
+
+  /** Why a level is locked (or '' if it is not). */
+  lockRequirement(index: number): string {
+    if (lockBypass.all) return '';
+    const l = levelLock(this.progress, this.levels, index);
+    return l.unlocked ? '' : (l.requirement ?? 'Locked');
+  }
+
+  get freePlayOpen(): boolean {
+    return lockBypass.all || freePlayUnlocked(this.progress, this.levels);
+  }
+
+  /** After a campaign win: refresh the title check and lock-dependent controls. */
+  markCompleted(_id: string): void {
     this.levelName.classList.add('done');
+    if (this.index >= 0) this.nextBtn.disabled = this.index >= this.levels.length - 1 || !this.levelUnlocked(this.index + 1);
+    this.renderFreePlay();
+  }
+
+  /** Free Play gate: the menu's New level button and the Free Play section. */
+  renderFreePlay(): void {
+    this.newBtn.disabled = !this.freePlayOpen && !this.root.classList.contains('random');
+    this.root.classList.toggle('freeplay-locked', !this.freePlayOpen);
+  }
+
+  /** Show a short status line in the open map / grid (lock requirements). */
+  showStatus(text: string): void {
+    for (const s of [this.mapStatus, this.pickerStatus]) {
+      s.textContent = text;
+      s.classList.add('show');
+    }
+    window.clearTimeout(this.statusTimer);
+    this.statusTimer = window.setTimeout(() => {
+      this.mapStatus.classList.remove('show');
+      this.pickerStatus.classList.remove('show');
+    }, 3500);
   }
 
   markRandomSolved(id: string, difficulty: number): void {
@@ -653,22 +819,40 @@ export class Hud {
     this.renderDifficulty();
   }
 
+  /** Simple win screen (kept for callers without a fanfare view). */
   showWin(moves: number, kind: WinKind): void {
     this.winKind = kind;
     this.winMoves.textContent = `${moves} ${moves === 1 ? 'move' : 'moves'}`;
-    if (kind === 'random') {
-      setLabel(this.winPrimary, 'Next random', ICONS.dice);
-      setLabel(this.winSecondary, 'Back to levels', ICONS.grid);
-    } else {
-      setLabel(this.winPrimary, kind === 'next' ? 'Next level' : 'All levels', kind === 'next' ? ICONS.next : ICONS.grid);
-      setLabel(this.winSecondary, 'Replay', ICONS.restart);
-    }
+  }
+
+  /** The themed win fanfare. */
+  showFanfare(v: FanfareView): void {
+    this.fanfareCleanup?.();
+    this.fanfareHost.dataset.skin = this.skinId;
+    this.win.dataset.skin = this.skinId;
     this.win.classList.remove('hidden');
-    this.winPrimary.focus({ preventScroll: true });
+    this.fanfareCleanup = this.skinProgression.winFanfare(this.fanfareHost, v);
   }
 
   hideWin(): void {
+    this.fanfareCleanup?.();
+    this.fanfareCleanup = null;
     this.win.classList.add('hidden');
+  }
+
+  /** The themed unlock ceremony. */
+  showCeremony(v: CeremonyView): void {
+    this.ceremonyCleanup?.();
+    this.ceremonyOverlay.dataset.skin = this.skinId;
+    this.ceremonyOverlay.dataset.kind = v.unlock.kind;
+    this.ceremonyOverlay.classList.remove('hidden');
+    this.ceremonyCleanup = this.skinProgression.ceremony(this.ceremonyHost, v);
+  }
+
+  hideCeremony(): void {
+    this.ceremonyCleanup?.();
+    this.ceremonyCleanup = null;
+    this.ceremonyOverlay.classList.add('hidden');
   }
 
   get winShown(): boolean {
@@ -684,27 +868,38 @@ export class Hud {
     this.building.classList.add('hidden');
   }
 
+  /** The flat grid of every level ("All levels"), with stars and locks. */
   openPicker(): void {
+    this.closeMap(false);
     this.pickerGrid.innerHTML = '';
+    const states = chapterStates(this.progress, this.levels);
     for (const ch of chapterRanges(this.levels.length)) {
-      const sec = el('div', 'chapter');
+      const st = states.find((c) => c.number === ch.number);
+      const sec = el('div', `chapter${st && !st.unlocked && !lockBypass.all ? ' locked' : ''}`);
       const head = el('div', 'chapter-head');
       let done = 0;
       for (let i = ch.start; i < ch.end; i++) if (this.isCompleted(this.levels[i].id)) done++;
       head.append(
         el('h4', 'chapter-title', `<span class="chapter-num">Chapter ${ch.number}</span> ${ch.chapter.title}`),
-        el('span', 'chapter-progress', `${done}/${ch.end - ch.start}`),
+        el('span', 'chapter-progress', `★ ${st?.stars ?? 0}/${(ch.end - ch.start) * 3} · ${done}/${ch.end - ch.start}`),
       );
       const grid = el('div', 'picker-grid');
       for (let i = ch.start; i < ch.end; i++) {
         const lv = this.levels[i];
         const isDone = this.isCompleted(lv.id);
-        const b = el('button', `level-tile${isDone ? ' done' : ''}${i === this.index ? ' current' : ''}`);
+        const req = this.lockRequirement(i);
+        const stars = this.progress.records[lv.id]?.stars ?? 0;
+        const b = el('button', `level-tile${isDone ? ' done' : ''}${req ? ' locked' : ''}${i === this.index ? ' current' : ''}`);
         b.type = 'button';
-        b.title = lv.name;
-        b.setAttribute('aria-label', `Level ${i + 1}: ${lv.name}${isDone ? ' (solved)' : ''}`);
-        b.innerHTML = `<span class="num">${i + 1}</span>${isDone ? `<span class="check">${ICONS.check}</span>` : ''}`;
+        b.title = req ? `${lv.name}: ${req}` : lv.name;
+        b.setAttribute('aria-label', `Level ${i + 1}: ${lv.name}${isDone ? ` (solved, ${stars} stars)` : ''}${req ? ` (locked: ${req})` : ''}`);
+        const starsHtml = isDone ? `<span class="tile-stars">${[1, 2, 3].map((k) => `<i class="${k <= stars ? 'on' : ''}"></i>`).join('')}</span>` : '';
+        b.innerHTML = req ? `<span class="lock">${LOCK_ICON}</span>` : `<span class="num">${i + 1}</span>${starsHtml}`;
         b.addEventListener('click', () => {
+          if (req) {
+            this.showStatus(`Level ${i + 1} is locked: ${req}`);
+            return;
+          }
           this.closePicker();
           this.handlers.onSelectLevel(i);
         });
@@ -714,10 +909,80 @@ export class Hud {
       this.pickerGrid.append(sec);
     }
     this.seedError.textContent = '';
+    this.pickerStatus.classList.remove('show');
+    this.picker.dataset.skin = this.skinId;
+    this.placeFreePlay(this.picker.querySelector('.picker-card') as HTMLElement);
     this.renderDifficulty();
     this.picker.classList.remove('hidden');
     const card = this.randomSection.parentElement;
-    if (card) card.scrollTop = this.index < 0 ? card.scrollHeight : 0;
+    if (card) card.scrollTop = this.index < 0 && this.freePlayOpen ? card.scrollHeight : 0;
+  }
+
+  /** Put the Free Play controls (or, while locked, what opens them) at the end of `parent`. */
+  private placeFreePlay(parent: HTMLElement): void {
+    parent.querySelector('.freeplay-lock')?.remove();
+    if (this.freePlayOpen) {
+      parent.append(this.randomSection);
+      return;
+    }
+    this.randomSection.remove();
+    const n = completedCount(this.progress, this.levels);
+    const lock = el('section', 'freeplay-lock');
+    lock.innerHTML = `<span class="lock">${LOCK_ICON}</span><div><h3>Free Play</h3><p>Random levels, daily puzzles and expeditions open after ${FREE_PLAY_AFTER} solved levels (${Math.min(n, FREE_PLAY_AFTER)}/${FREE_PLAY_AFTER}).</p></div>`;
+    parent.append(lock);
+  }
+
+  /** The themed level map (pause menu "Levels", win "Map"). */
+  openMap(): void {
+    this.closePicker();
+    this.closeMenu();
+    const model = this.mapModel();
+    this.mapOverlay.dataset.skin = this.skinId;
+    this.mapHost.dataset.skin = this.skinId;
+    this.skinProgression.renderMap(this.mapHost, model);
+    this.mapStatus.classList.remove('show');
+    this.mapFree.innerHTML = '';
+    this.placeFreePlay(this.mapFree);
+    this.seedError.textContent = '';
+    this.renderDifficulty();
+    this.mapOverlay.classList.remove('hidden');
+    const card = this.mapHost.parentElement as HTMLElement;
+    const cur = this.mapHost.querySelector('.current') as HTMLElement | null;
+    if (this.index < 0 && this.freePlayOpen) card.scrollTop = card.scrollHeight;
+    else if (cur) card.scrollTop = Math.max(0, cur.getBoundingClientRect().top - card.getBoundingClientRect().top + card.scrollTop - card.clientHeight / 2);
+    else card.scrollTop = 0;
+  }
+
+  closeMap(_notify = true): void {
+    this.mapOverlay.classList.add('hidden');
+  }
+
+  /** Map view model from progress (stars, locks, current level). */
+  mapModel(): MapModel {
+    const p = this.progress;
+    const states = chapterStates(p, this.levels);
+    const chapters = states.map((c) => {
+      const levels: MapLevelView[] = [];
+      for (let i = c.start; i < c.end; i++) {
+        const lv = this.levels[i];
+        const r = p.records[lv.id];
+        const req = this.lockRequirement(i);
+        levels.push({ index: i, id: lv.id, name: lv.name, unlocked: !req, completed: !!r?.completed, stars: r?.stars ?? 0, current: i === this.index, requirement: req || undefined, bestMoves: r?.bestMoves, parMoves: parFor(lv.id)?.moves });
+      }
+      const unlocked = lockBypass.all || c.unlocked;
+      const requirement = unlocked ? undefined : levels[0]?.requirement;
+      return { number: c.number, title: c.title, unlocked, requirement, stars: c.stars, maxStars: c.maxStars, completed: c.completed, levels };
+    });
+    return {
+      chapters,
+      totalStars: totalStars(p, this.levels),
+      maxStars: this.levels.length * 3,
+      select: (i) => {
+        this.closeMap();
+        this.handlers.onSelectLevel(i);
+      },
+      explain: (l) => this.showStatus(`Level ${l.index + 1} is locked: ${l.requirement ?? ''}`),
+    };
   }
 
   closePicker(): void {

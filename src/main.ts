@@ -6,13 +6,19 @@ import { LEVELS } from './levels';
 import { Renderer, createView, type CameraMode } from './render/renderer';
 import { attachPointer } from './input/pointer';
 import { attachKeyboard, fixSelection } from './input/keyboard';
-import { Hud } from './ui/hud';
+import { Hud, lockBypass } from './ui/hud';
+import { migrateCompleted, nextPendingUnlock, recordWin, settleSeen, type Unlock } from './progress/model';
+import type { FanfareView } from './render/themes/progression/types';
+import { chapterTheme } from './ui/chapters';
+import { listSkins } from './render/themes';
 import { HeroInput, heroApi } from './input/hero';
 import { Sfx, measureSound } from './audio/sfx';
 import { Haptics } from './audio/haptics';
 import type { Dir } from './core/types';
-import { gravityFor } from './ui/progress';
+import { gravityFor, saveProgress } from './ui/progress';
 import type { GenerateOptions } from './levels/generate';
+import { parFor } from './levels/par';
+import { boxPath, parseHeroEntry, parseStep } from './levels/replay';
 
 const STEP_MS = 1000 / 60;
 const MAX_STEPS_PER_FRAME = 4;
@@ -28,17 +34,22 @@ const hud = new Hud(app, {
   onNewRandom: () => newRandom(),
   onPlayRandom: (d) => {
     const seed = freshSeed();
-    loadRandom(d, seed, gravityFor(hud.randomMode, seed), hud.randomHero);
+    loadRandom(d, seed, gravityFor(hud.randomMode, seed), hud.randomHero || hud.randomBig, hud.randomBig);
   },
   onPlayDaily: (d) => {
     const seed = generateDailySeed();
-    loadRandom(d, seed, gravityFor(hud.randomMode, seed), hud.randomHero);
+    loadRandom(d, seed, gravityFor(hud.randomMode, seed), hud.randomHero || hud.randomBig, hud.randomBig);
   },
-  onPlaySeed: (d, seed, gravity, hero) =>
-    loadRandom(d, seed, gravity ?? gravityFor(hud.randomMode, seed), hero ?? hud.randomHero),
+  onPlaySeed: (d, seed, gravity, hero, big) => {
+    const b = big ?? (hero === undefined ? hud.randomBig : false);
+    loadRandom(d, seed, gravity ?? gravityFor(hud.randomMode, seed), (hero ?? hud.randomHero) || b, b);
+  },
   onUndo: () => undo(),
   onSound: (on) => sfx.setEnabled(on),
   onSoundDiag: () => toggleAudioDiag(),
+  onTheme: () => {
+    if (currentLevel) applyTheme(currentLevel);
+  },
   onOverview: () => toggleOverview(),
   onMenu: (open) => {
     if (open) {
@@ -50,10 +61,22 @@ const hud = new Hud(app, {
   onHapticsTest: () => haptics.test(),
   onHeroMove: (d) => heroKey(d),
 });
+// Locks can be bypassed for testing / authoring: ?unlock=all
+if (new URLSearchParams(location.search).get('unlock') === 'all') lockBypass.all = true;
 hud.setLevels(LEVELS);
+// Progression: an older profile's completed levels become 1-star records, and whatever is already
+// open is marked seen (no ceremony flood for a returning player).
+if (hud.progress.progression < 1) {
+  migrateCompleted(hud.progress);
+  settleSeen(hud.progress, LEVELS);
+  hud.progress.progression = 1;
+  saveProgress(hud.progress);
+}
+hud.renderFreePlay();
 hud.setDailySeed(generateDailySeed());
 
 const renderer = new Renderer(hud.canvas);
+hud.setThemes(listSkins().map((k) => ({ id: k.id, name: k.name })));
 
 // ---------- Sound: never autoplays; the context is created/resumed on the first user gesture ----------
 const sfx = new Sfx(hud.progress.sound);
@@ -109,13 +132,18 @@ const view = createView();
 /** What is being played: a handmade campaign level or a generated one. */
 type Mode =
   | { kind: 'campaign'; index: number }
-  | { kind: 'random'; difficulty: number; seed: number; gravity: boolean; hero: boolean };
+  | { kind: 'random'; difficulty: number; seed: number; gravity: boolean; hero: boolean; big: boolean };
 
 let mode: Mode = { kind: 'campaign', index: 0 };
 let currentLevel: LevelDef | null = null;
 let state: GameState;
 let winTimer = 0;
 let buildToken = 0;
+
+/** Per-run stats (no clock is shown during play): sim steps since the first input, and steps in
+ *  which sand flowed into a box. */
+const stats = { steps: 0, flowSteps: 0 };
+const STEPS_PER_SEC = 60;
 
 /** Sim RNG seed (sand speckle / flow). Fixed so a level plays out exactly as it was verified:
  *  random levels are proven with the generator's SIM_SEED, campaign levels with seed 7
@@ -182,6 +210,25 @@ function undo(): void {
 }
 
 /** Start (or restart) playing a level definition. */
+/**
+ * Skin for a level: a fixed pick in the menu wins; on Auto it is the level's theme, else its
+ * chapter's theme, else slate. The page background follows the skin.
+ */
+function themeFor(def: LevelDef): string {
+  const pick = hud.progress.theme;
+  if (pick && pick !== 'auto') return pick;
+  if (def.theme) return def.theme;
+  if (mode.kind === 'campaign' && LEVELS[mode.index] === def) return chapterTheme(mode.index) ?? 'slate';
+  return 'slate';
+}
+function applyTheme(def: LevelDef): void {
+  const skin = renderer.setSkin(themeFor(def));
+  hud.skinProgression = skin.progression;
+  hud.skinId = skin.id;
+  document.documentElement.style.setProperty('--bg', skin.pageBg);
+  document.documentElement.dataset.theme = skin.id;
+}
+
 /** Camera per level ('fit' unless the level asks for a big-map camera). */
 function applyCamera(def: LevelDef): void {
   renderer.setCamera((def as LevelDef & { camera?: CameraMode }).camera);
@@ -217,9 +264,11 @@ function maybeBigMapHint(def: LevelDef): void {
 
 function startLevel(def: LevelDef): void {
   applyCamera(def);
+  applyTheme(def);
   undoStack = [];
   heroInput?.cancelGesture();
   currentLevel = def;
+  stats.steps = stats.flowSteps = 0;
   state = createGame(def, newSeed());
   view.selectedBoxId = null;
   view.dragBoxId = null;
@@ -232,15 +281,29 @@ function startLevel(def: LevelDef): void {
   pendingHint = def; // checked on the first rendered frame (the camera needs the final layout)
 }
 
-function loadLevel(i: number): void {
-  if (LEVELS.length === 0) return;
+/** Play campaign level i. Locked levels are refused (the map opens with the requirement) unless
+ *  `force` (debug). Returns whether the level was loaded. */
+function loadLevel(i: number, force = false): boolean {
+  if (LEVELS.length === 0) return false;
+  i = Math.max(0, Math.min(LEVELS.length - 1, i));
+  if (!force && !hud.levelUnlocked(i)) {
+    showLocked(i);
+    return false;
+  }
   buildToken++; // cancel a pending generation
   hud.hideBuilding();
-  i = Math.max(0, Math.min(LEVELS.length - 1, i));
   mode = { kind: 'campaign', index: i };
   hud.setLevel(i, LEVELS[i]);
   startLevel(LEVELS[i]);
   setHash(`level-${i + 1}`);
+  return true;
+}
+
+/** A locked level was asked for: open the map and say what opens it. */
+function showLocked(i: number): void {
+  hud.hideWin();
+  hud.openMap();
+  hud.showStatus(`Level ${i + 1} is locked: ${hud.lockRequirement(i)}`);
 }
 
 /** Generate and play a random level. Shows a "Building level…" state while generating. */
@@ -249,31 +312,33 @@ function loadLevel(i: number): void {
  * gravity levels pass `{ difficulty, gravity: true }`. An older generator that ignores the flag
  * yields a floating level, which is then shown and linked as floating.
  */
-function generate(seed: number, difficulty: number, gravity: boolean, hero: boolean): LevelDef {
+function generate(seed: number, difficulty: number, gravity: boolean, hero: boolean, big = false): LevelDef {
   if (!gravity && !hero) return generateLevel(seed, difficulty);
-  return generateLevel(seed, genOpts(difficulty, gravity, hero));
+  return generateLevel(seed, genOpts(difficulty, gravity, hero, big));
 }
 
 /** Options object for gravity/hero levels (`hero` may not be known to an older generator). */
-function genOpts(difficulty: number, gravity: boolean, hero: boolean): GenerateOptions {
+function genOpts(difficulty: number, gravity: boolean, hero: boolean, big = false): GenerateOptions {
   const o: Record<string, unknown> = { difficulty };
   if (gravity) o.gravity = true;
-  if (hero) o.hero = true;
+  if (hero || big) o.hero = true;
+  if (big) o.big = true;
   return o as unknown as GenerateOptions;
 }
 
-function loadRandom(difficulty: number, seed: number, gravity = false, hero = false): void {
+function loadRandom(difficulty: number, seed: number, gravity = false, hero = false, big = false): void {
+  if (big) hero = true; // an Expedition is a hero level
   difficulty = Math.max(1, Math.min(10, Math.round(difficulty)));
   seed = Math.max(0, Math.min(0x7fffffff, Math.floor(seed)));
   const token = ++buildToken;
-  hud.showBuilding(`Building level… (difficulty ${difficulty}${gravity ? ', gravity' : ''}${hero ? ', pusher' : ''})`);
+  hud.showBuilding(`Building ${big ? 'expedition' : 'level'}… (difficulty ${difficulty}${gravity ? ', gravity' : ''}${hero && !big ? ', pusher' : ''})`);
   // Let the overlay paint before the (synchronous, up to ~1 s) generation.
   requestAnimationFrame(() =>
     window.setTimeout(() => {
       if (token !== buildToken) return;
       let def: LevelDef;
       try {
-        def = generate(seed, difficulty, gravity, hero);
+        def = generate(seed, difficulty, gravity, hero, big);
       } catch (err) {
         console.error(err);
         hud.showBuilding('Could not build that level. Try another seed.');
@@ -283,7 +348,8 @@ function loadRandom(difficulty: number, seed: number, gravity = false, hero = fa
       if (token !== buildToken) return;
       // What was actually generated decides the title and the link (an older generator may ignore
       // the hero/gravity flags).
-      mode = { kind: 'random', difficulty, seed, gravity: !!def.boxGravity, hero: !!def.hero };
+      const cam = (def as LevelDef & { camera?: CameraMode }).camera;
+      mode = { kind: 'random', difficulty, seed, gravity: !!def.boxGravity, hero: !!def.hero, big: !!cam && cam !== 'fit' };
       hud.setRandomLevel(def, difficulty, seed);
       startLevel(def);
       setHash(def.id);
@@ -300,14 +366,20 @@ function restart(): void {
 }
 
 function newRandom(): void {
+  if (mode.kind !== 'random' && !hud.freePlayOpen) {
+    hud.openMap(); // shows what opens Free Play
+    return;
+  }
   const d = mode.kind === 'random' ? mode.difficulty : hud.difficulty;
+  const big = mode.kind === 'random' ? mode.big : hud.randomBig;
   const seed = freshSeed();
-  loadRandom(d, seed, gravityFor(hud.randomMode, seed), hud.randomHero);
+  loadRandom(d, seed, gravityFor(hud.randomMode, seed), hud.randomHero || big, big);
 }
 
+/** Next level; in the campaign it stops at the first locked level (the map explains why). */
 function next(): void {
   if (mode.kind === 'random') newRandom();
-  else loadLevel(mode.index + 1);
+  else if (mode.index + 1 < LEVELS.length) loadLevel(mode.index + 1);
 }
 
 function prev(): void {
@@ -324,12 +396,13 @@ function setHash(h: string): void {
 /** Load whatever the hash names. Returns false if it names nothing loadable. */
 function loadFromHash(): boolean {
   const h = decodeURIComponent(location.hash.slice(1));
-  const g = /^gen-(\d{1,2})(g?)(h?)-(\d{1,10})$/.exec(h);
+  const g = /^gen-(\d{1,2})(x?)(g?)(h?)-(\d{1,10})$/.exec(h);
   if (g) {
     const d = Number(g[1]);
-    const seed = Number(g[4]);
+    const seed = Number(g[5]);
     if (d >= 1 && d <= 10 && seed <= 0x7fffffff) {
-      loadRandom(d, seed, g[2] === 'g', g[3] === 'h');
+      const big = g[2] === 'x';
+      loadRandom(d, seed, g[3] === 'g', g[4] === 'h' || big, big);
       return true;
     }
   }
@@ -337,6 +410,12 @@ function loadFromHash(): boolean {
   if (l) {
     const i = Number(l[1]) - 1;
     if (i >= 0 && i < LEVELS.length) {
+      if (!hud.levelUnlocked(i)) {
+        // locked: play the furthest open level instead and show what opens this one
+        if (!currentLevel) loadLevel(initialLevel());
+        showLocked(i);
+        return true;
+      }
       loadLevel(i);
       return true;
     }
@@ -349,10 +428,10 @@ window.addEventListener('hashchange', () => {
 });
 
 function initialLevel(): number {
-  const { last, completed } = hud.progress;
+  const { last } = hud.progress;
   const lastIdx = last ? LEVELS.findIndex((l) => l.id === last) : -1;
-  if (lastIdx >= 0) return lastIdx;
-  const firstOpen = LEVELS.findIndex((l) => !completed.includes(l.id));
+  if (lastIdx >= 0 && hud.levelUnlocked(lastIdx)) return lastIdx;
+  const firstOpen = LEVELS.findIndex((l, i) => !hud.isCompleted(l.id) && hud.levelUnlocked(i));
   return firstOpen >= 0 ? firstOpen : 0;
 }
 
@@ -429,6 +508,91 @@ function playSound(ev: GameState['events'][number]): void {
   }
 }
 
+/** Record a win and build its fanfare (records are saved now, the screen shows after a beat). */
+function winFanfare(won: GameState, m: Mode): FanfareView {
+  const seconds = stats.steps / STEPS_PER_SEC;
+  const sandSeconds = stats.flowSteps / STEPS_PER_SEC;
+  const onStar = (i: number) => {
+    sfx.play('star', { color: i });
+    haptics.pulse('tick');
+  };
+  const leave = (fn: () => void) => () => {
+    hud.hideWin();
+    runCeremonies(fn);
+  };
+  if (m.kind === 'random') {
+    hud.markRandomSolved(won.level.id, m.difficulty);
+    return {
+      kicker: m.big ? 'Expedition' : 'Free Play',
+      title: won.level.name,
+      stars: null,
+      prevStars: 0,
+      moves: won.moves,
+      seconds,
+      sandSeconds,
+      newRecord: { moves: false, seconds: false, sandSeconds: false, pour: false },
+      firstClear: false,
+      next: { label: 'Next random', run: leave(() => newRandom()) },
+      replay: { label: 'Replay', run: leave(() => restart()) },
+      map: { label: 'Map', run: leave(() => hud.openMap()) },
+      onStar,
+    };
+  }
+  const o = recordWin(hud.progress, LEVELS, won.level.id, { moves: won.moves, seconds, sandSeconds });
+  saveProgress(hud.progress);
+  hud.markCompleted(won.level.id);
+  const i = m.index;
+  const hasNext = i + 1 < LEVELS.length && hud.levelUnlocked(i + 1);
+  const r = o.record;
+  return {
+    kicker: `Level ${i + 1}`,
+    title: won.level.name,
+    stars: o.stars,
+    prevStars: o.prevStars,
+    moves: won.moves,
+    parMoves: o.par?.moves,
+    seconds,
+    sandSeconds,
+    best: o.before ? { moves: r.bestMoves, seconds: r.bestSeconds, sandSeconds: r.bestSandSeconds, pour: r.maxSandSeconds } : undefined,
+    newRecord: o.newRecord,
+    firstClear: o.firstClear,
+    unlockedText: o.unlockedNext ? `Level ${i + 2} unlocked` : undefined,
+    next: hasNext ? { label: 'Next level', run: leave(() => next()) } : null,
+    replay: { label: 'Replay', run: leave(() => restart()) },
+    map: { label: 'Map', run: leave(() => hud.openMap()) },
+    onStar,
+  };
+}
+
+/** Show queued unlock ceremonies one at a time, then run `then`. */
+function runCeremonies(then: () => void = () => {}): void {
+  const u = nextPendingUnlock(hud.progress);
+  if (!u) {
+    then();
+    return;
+  }
+  saveProgress(hud.progress); // dequeued: it fires once
+  const t = ceremonyText(u);
+  hud.showCeremony({
+    unlock: u,
+    title: t.title,
+    text: t.text,
+    cta: 'Continue',
+    onContinue: () => {
+      hud.hideCeremony();
+      runCeremonies(then);
+    },
+  });
+  sfx.play('unlock');
+  haptics.pulse('win');
+}
+
+function ceremonyText(u: Unlock): { title: string; text: string } {
+  if (u.kind === 'chapter') return { title: `Chapter ${u.chapter} unlocked`, text: `${u.title}: a new set of levels is open on the map.` };
+  if (u.kind === 'freeplay') return { title: 'Free Play unlocked', text: 'Random levels, the daily puzzle and expeditions are now on the level map.' };
+  return { title: `${u.stars} stars!`, text: 'Chapters open as you collect stars. Replay a level under par for three.' };
+}
+
 function drainEvents(now: number): void {
   const evs = state.events;
   if (evs.length === 0) return;
@@ -439,15 +603,12 @@ function drainEvents(now: number): void {
       const won = state;
       const m = mode;
       // Only real campaign/random levels count (not debug playLevel() boards).
-      if (won.level === currentLevel) {
-        if (m.kind === 'random') hud.markRandomSolved(won.level.id, m.difficulty);
-        else hud.markCompleted(won.level.id);
-      }
+      if (won.level !== currentLevel) continue;
+      const fanfare = winFanfare(won, m);
       window.clearTimeout(winTimer);
       winTimer = window.setTimeout(() => {
         if (state !== won || won.level !== currentLevel) return;
-        if (m.kind === 'random') hud.showWin(won.moves, 'random');
-        else hud.showWin(won.moves, m.index < LEVELS.length - 1 ? 'next' : 'last');
+        hud.showFanfare(fanfare);
       }, WIN_DELAY_MS);
     }
   }
@@ -628,6 +789,23 @@ function releaseGoneHeldBox(): void {
   }
 }
 
+/** One fixed sim step, with the run stats: sim time since the first input, and steps in which
+ *  sand flowed into a box (both stop at the win). */
+function simStep(): void {
+  const ev0 = state.events.length;
+  const wonBefore = state.won;
+  stepGame(state);
+  if (state.moves > 0 && !wonBefore) {
+    stats.steps++;
+    for (let k = ev0; k < state.events.length; k++) {
+      if (state.events[k].type === 'transfer') {
+        stats.flowSteps++;
+        break;
+      }
+    }
+  }
+}
+
 let accumulator = 0;
 let lastTime = performance.now();
 
@@ -638,7 +816,7 @@ function frame(now: number): void {
     accumulator += dt;
     let steps = 0;
     while (accumulator >= STEP_MS && steps < MAX_STEPS_PER_FRAME) {
-      stepGame(state);
+      simStep();
       accumulator -= STEP_MS;
       steps++;
     }
@@ -667,6 +845,7 @@ function frame(now: number): void {
 
 if (!loadFromHash() && LEVELS.length > 0) loadLevel(initialLevel());
 layout();
+if (hud.progress.pendingUnlocks.length) runCeremonies(); // left over from an earlier session
 requestAnimationFrame(frame);
 
 // Debug handle.
@@ -695,10 +874,30 @@ window.__game = {
   renderer,
   hud,
   levels: LEVELS,
-  loadLevel,
+  /** Debug: loads any level, locked or not. */
+  loadLevel: (i: number) => loadLevel(i, true),
+  /** Debug / tests: ignore the lock rules for this session (same as ?unlock=all). */
+  unlockAll(on = true) {
+    lockBypass.all = on;
+    hud.renderFreePlay();
+  },
+  get progress() {
+    return hud.progress;
+  },
+  parFor,
+  get stats() {
+    return { ...stats, seconds: stats.steps / STEPS_PER_SEC, sandSeconds: stats.flowSteps / STEPS_PER_SEC };
+  },
   restart,
   heroStep,
   heroKick,
+  /** Theme override: 'auto' or a skin id (persisted, like the menu picker). */
+  setTheme(id: string) {
+    hud.setTheme(id);
+  },
+  get skin() {
+    return renderer.skin.id;
+  },
   undo,
   sfx,
   haptics,
@@ -708,20 +907,62 @@ window.__game = {
   },
   heroInput: () => heroInput,
   /** Debug: play an arbitrary LevelDef without changing the level index. */
-  playLevel(def: LevelDef) {
+  playLevel(def: LevelDef, seed?: number) {
     window.clearTimeout(winTimer);
     hud.hideWin();
     undoStack = [];
     heroInput.cancel();
     hud.showLevelChrome(def); // badges / undo button only; progress is untouched
     applyCamera(def);
-    state = createGame(def, newSeed());
+    applyTheme(def);
+    state = createGame(def, seed ?? newSeed());
+    stats.steps = stats.flowSteps = 0;
     view.selectedBoxId = view.dragBoxId = view.hoverBoxId = null;
     view.effects.length = 0;
     renderer.reset();
     layout();
   },
   step(n = 1) {
-    for (let i = 0; i < n; i++) stepGame(state);
+    for (let i = 0; i < n; i++) simStep();
+  },
+  /** Debug / tests: play the current campaign level's authored solution (fast-forwarded sim).
+   *  Each entry is applied, then the sim runs until quiet. Returns whether the level was won. */
+  autoplay(plan?: string[]): boolean {
+    const def = currentLevel;
+    if (!def) return false;
+    const entries = plan ?? (def as LevelDef & { solution?: string[] }).solution ?? [];
+    const settle = (max = 60 * 60) => {
+      let quiet = 0;
+      for (let i = 0; i < max && quiet < 45 && !state.won; i++) {
+        const n = state.events.length;
+        simStep();
+        quiet = state.events.length > n || state.boxes.some((b) => b.state === 'active' && (b.falling || b.sliding)) ? 0 : quiet + 1;
+      }
+    };
+    settle();
+    for (const e of entries) {
+      if (state.won) break;
+      const hero = parseHeroEntry(e);
+      if (state.hero && hero) {
+        for (const h of hero) {
+          if (h.kick) heroKick(h.dir);
+          else heroStep(h.dir);
+          for (let i = 0; i < 6; i++) simStep();
+          settle(600);
+        }
+        continue;
+      }
+      const st = parseStep(e);
+      const box = st && state.boxes[st.box];
+      if (!st || !box) return false;
+      const path = boxPath(state, box, st.x, st.y);
+      if (!path) return false;
+      for (const [x, y] of path) moveBoxToward(state, box.id, x, y);
+      state.moves++;
+      if (!st.noWait) settle();
+      else for (let i = 0; i < 30; i++) simStep();
+    }
+    settle();
+    return state.won;
   },
 };

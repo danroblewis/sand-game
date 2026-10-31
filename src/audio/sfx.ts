@@ -7,7 +7,7 @@
 // - one shared noise buffer, at most MAX_VOICES concurrent one-shots,
 // - a continuous sand hiss (looping band-passed noise) whose level follows the flow rate.
 
-export type SoundName = 'pop' | 'thaw' | 'land' | 'step' | 'climb' | 'push' | 'slide' | 'undo' | 'win' | 'debris' | 'belt' | 'whoosh' | 'stop' | 'armed' | 'thrust';
+export type SoundName = 'pop' | 'thaw' | 'land' | 'step' | 'climb' | 'push' | 'slide' | 'undo' | 'win' | 'debris' | 'belt' | 'whoosh' | 'stop' | 'armed' | 'thrust' | 'star' | 'unlock';
 
 export interface SoundOpts {
   /** Box color index (pop pitch). */
@@ -142,6 +142,23 @@ export const SYNTHS: Record<SoundName, Synth> = {
     [523.25, 659.25, 783.99, 1046.5].forEach((f, i) => {
       end = Math.max(end, tone(ctx, out, 'triangle', t + i * 0.09, f, f, 0, 0.16, 0.005, 0.32));
       end = Math.max(end, tone(ctx, out, 'sine', t + i * 0.09, f * 2, f * 2, 0, 0.03, 0.004, 0.15));
+    });
+    return end;
+  },
+  // Fanfare star (color = 1..3: rising pitch): bright chime with a soft shimmer.
+  star: (ctx, out, _n, t, o) => {
+    const f = [880, 1108.73, 1318.51][Math.max(0, Math.min(2, (o.color ?? 1) - 1))];
+    let end = tone(ctx, out, 'triangle', t, f, f * 1.01, 0, 0.2, 0.004, 0.3);
+    end = Math.max(end, tone(ctx, out, 'sine', t + 0.02, f * 2, f * 2, 0, 0.06, 0.003, 0.22));
+    end = Math.max(end, tone(ctx, out, 'sine', t + 0.05, f * 3, f * 3.02, 0, 0.03, 0.003, 0.18));
+    return end;
+  },
+  // Unlock ceremony: a low "clunk" then a rising major-seventh swell.
+  unlock: (ctx, out, noise, t) => {
+    let end = noiseBurst(ctx, out, noise, t, 'lowpass', 700, 300, 0.8, 0.3, 0.002, 0.08);
+    [392, 493.88, 587.33, 739.99, 783.99].forEach((f, i) => {
+      end = Math.max(end, tone(ctx, out, 'triangle', t + 0.12 + i * 0.08, f, f, 0, 0.14, 0.01, 0.45));
+      end = Math.max(end, tone(ctx, out, 'sine', t + 0.12 + i * 0.08, f * 2, f * 2, 0, 0.025, 0.006, 0.3));
     });
     return end;
   },

@@ -112,6 +112,8 @@ export interface LevelDef {
    *  'scroll' follows the focus (hero, held box) smoothly at a fixed cell size; 'rooms' snaps
    *  between screen-sized rooms (square reveal). */
   camera?: 'fit' | 'scroll' | 'rooms';
+  /** Visual theme id for this level (overrides the chapter's theme). See src/render/themes. */
+  theme?: string;
   /** Optional one-line hint shown in the HUD. */
   hint?: string;
   /** Optional authored solution as drag steps "box#i -> (x,y)" (i = index into `boxes`). Levels are

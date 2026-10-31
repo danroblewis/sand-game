@@ -4,14 +4,16 @@ export interface Chapter {
   title: string;
   /** Index into LEVELS of the chapter's first level. */
   start: number;
+  /** Default skin for the chapter's levels (src/render/themes). */
+  theme?: string;
 }
 
 export const CHAPTERS: readonly Chapter[] = [
-  { title: 'Sand', start: 0 },
-  { title: 'Workshop', start: 18 },
-  { title: 'Pusher', start: 27 },
-  { title: 'Pusher II', start: 41 },
-  { title: 'Expanse', start: 77 },
+  { title: 'Sand', start: 0, theme: 'slate' },
+  { title: 'Workshop', start: 18, theme: 'slate' },
+  { title: 'Pusher', start: 27, theme: 'station' },
+  { title: 'Pusher II', start: 41, theme: 'station' },
+  { title: 'Expanse', start: 77, theme: 'station' },
 ];
 
 /** Chapters that contain at least one of `levelCount` levels, with their [start, end) ranges. */
@@ -23,6 +25,13 @@ export function chapterRanges(levelCount: number): { chapter: Chapter; number: n
     if (start < end) out.push({ chapter, number: i + 1, start, end });
   });
   return out;
+}
+
+/** Default theme of the chapter containing a level index, if any. */
+export function chapterTheme(index: number): string | undefined {
+  let t: string | undefined;
+  for (const c of CHAPTERS) if (index >= c.start) t = c.theme;
+  return t;
 }
 
 /** 1-based chapter number of a level index (0 if before the first chapter). */

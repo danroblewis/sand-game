@@ -1,4 +1,5 @@
 // Player progress persisted in localStorage.
+import type { LevelRecord, Unlock } from '../progress/model';
 const KEY = 'sandboxes.progress';
 const RECENT_MAX = 300;
 
@@ -23,6 +24,18 @@ export interface Progress {
   haptics: boolean;
   /** The one-time big-map "look around" hint was shown. */
   seenBigMapHint?: boolean;
+  /** Theme override: 'auto' (level / chapter default) or a skin id. */
+  theme: string;
+  /** Random levels: big maps with the hero (Expedition). */
+  randomBig: boolean;
+  /** Per-level records (campaign), keyed by level id. */
+  records: Record<string, LevelRecord>;
+  /** Unlock ceremonies already queued or shown (keys from unlockKey). */
+  seenUnlocks: string[];
+  /** Unlock ceremonies waiting to be shown. */
+  pendingUnlocks: Unlock[];
+  /** Progression data version (0 = an older profile that still needs migrating). */
+  progression: number;
 }
 
 export type RandomMode = 'floating' | 'gravity' | 'mixed';
@@ -34,7 +47,7 @@ export function gravityFor(mode: RandomMode, seed: number): boolean {
 }
 
 export function loadProgress(): Progress {
-  const p: Progress = { completed: [], last: null, difficulty: null, randomSolved: {}, randomRecent: [], randomMode: 'floating', randomHero: false, sound: true, haptics: true };
+  const p: Progress = { completed: [], last: null, difficulty: null, randomSolved: {}, randomRecent: [], randomMode: 'floating', randomHero: false, sound: true, haptics: true, theme: 'auto', randomBig: false, records: {}, seenUnlocks: [], pendingUnlocks: [], progression: 0 };
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return p;
@@ -50,6 +63,19 @@ export function loadProgress(): Progress {
     if (typeof o.sound === 'boolean') p.sound = o.sound;
     if (typeof o.haptics === 'boolean') p.haptics = o.haptics;
     if (o.seenBigMapHint === true) p.seenBigMapHint = true;
+    if (typeof o.theme === 'string' && o.theme) p.theme = o.theme;
+    if (typeof o.randomBig === 'boolean') p.randomBig = o.randomBig;
+    if (o.records && typeof o.records === 'object') {
+      for (const [id, r] of Object.entries(o.records)) {
+        if (!r || typeof r !== 'object') continue;
+        const num = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) && x >= 0 ? x : undefined);
+        const stars = Math.max(0, Math.min(3, Math.round(num(r.stars) ?? 0)));
+        p.records[id] = { completed: r.completed === true, stars, bestMoves: num(r.bestMoves), bestSeconds: num(r.bestSeconds), bestSandSeconds: num(r.bestSandSeconds), maxSandSeconds: num(r.maxSandSeconds) };
+      }
+    }
+    if (Array.isArray(o.seenUnlocks)) p.seenUnlocks = o.seenUnlocks.filter((x) => typeof x === 'string');
+    if (Array.isArray(o.pendingUnlocks)) p.pendingUnlocks = o.pendingUnlocks.filter((u) => u && typeof u === 'object' && typeof (u as Unlock).kind === 'string');
+    if (typeof o.progression === 'number') p.progression = o.progression;
     if (Array.isArray(o.randomRecent)) p.randomRecent = o.randomRecent.filter((x) => typeof x === 'string').slice(-RECENT_MAX);
   } catch {
     /* storage unavailable or corrupt */
