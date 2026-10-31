@@ -3,6 +3,11 @@
 import { describe, expect, it } from 'vitest';
 import { LEVELS } from '../src/levels/index';
 import { describeState, replayLevel } from '../src/levels/replay';
+import { EXPANSE } from '../src/levels/expanse';
+
+/** Chapter 5 "Expanse" (big maps): long walks, chains that fill as one container and loops that
+ *  circulate until their boxes pop, so it gets its own limits: 240 s total, up to 60 s per wait. */
+const CH5 = new Set(EXPANSE.map((l) => l.id));
 
 const SEEDS = [7, 1, 12345];
 
@@ -12,7 +17,7 @@ describe('levels win in the real simulation', () => {
     // Workshop from index 18, Pusher and Pusher II from index 27) stage sequences where one trigger
     // drains a whole stack (a frozen plug thawing, a pin pulled), so they get 150 s total and up to
     // 40 s for that one wait.
-    const [maxTotal, maxWait] = index < 18 ? [120, 25] : [150, 40];
+    const [maxTotal, maxWait] = CH5.has(level.id) ? [240, 60] : index < 18 ? [120, 25] : [150, 40];
     it(
       `${level.id} solution wins (seeds ${SEEDS.join(', ')})`,
       () => {

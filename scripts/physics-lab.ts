@@ -4,6 +4,7 @@
 // after every drag has settled. The rules of thumb at the top of src/levels/index.ts come from here.
 import type { BoxDef, ConveyorDef, LevelDef, ShapeName } from '../src/core/types';
 import { describeState, replayLevel } from '../src/levels/replay';
+import { createGame, stepGame } from '../src/core';
 
 const R = 1, O = 2, Y = 3, G = 4, B = 6, K = 9;
 type L = [number, number][];
@@ -274,3 +275,45 @@ runSeeds('HB1 thawed face drains the red steps leaning on it', hlvl(glvl(8, 9, [
 runSeeds('HB2 1x2 catches half, then drinks the rest at a pit foot', hlvl(glvl(8, 10, [[2, 3, 1, 1, [[G, 1]]], [1, 9, 1, 1, [[G, 1]]]],
   [box('1x2', 3, 4, G)], [...col(1, 6, 8), ...col(2, 6, 9), ...col(3, 6, 9), ...col(4, 6, 9), ...col(5, 6, 9)]), [4, 5]), ['L', 'LL'], true);
 // Results: HB1 wins on all seeds (~10 s); HB2 wins (~2 s for the second half).
+
+// ---- Chapter 5 "Expanse" (big maps, src/levels/expanse.ts), 2026-10-30 ----
+// XA. Long chain (rule 6b): a line of n red 1x1s at row 8 fed from below a red sand box whose
+// bottom row sits over the first two links; the hero pushes the last link (the one under the sand
+// box) up into place, so the whole line connects at once. Results: n=8 pops as one group in
+// ~8 s, n=16 in ~12 s, n=24 (3-wide source) ~25 s; the chain push carries the sand along the line
+// nearest-first, every member pops on the same step. Long Haul (30 cells, 6-wide source) fills in
+// ~11 s, Relay (24, 3-wide) ~12 s, Expanse (27, 3-wide) ~13 s. A partial chain that touches the
+// source fills its own capacity and pops early: close the link under the source last.
+for (const n of [8, 16]) {
+  const chain = [box('1x1', 1, 9, R), ...Array.from({ length: n - 1 }, (_, i) => box('1x1', 2 + i, 8, R))];
+  runSeeds(`XA chain n=${n}`, hlvl({ ...lvl(n + 3, 11, [[0, 8 - n / 2, 2, n / 2, [[R, n]]]], chain) }, [1, 10]), ['U']);
+}
+// XB. Passing under a station: a 1x1 riding a belt under a 1-wide sand box catches its bottom band
+// by gravity on the way. Measured (seeds 7/1/12345/99/5): belt interval 20 catches 0.83 and rides
+// on unfinished; 25, 30 and 40 pop it in one pass. A 2-wide station with two 1x1 riders: one band
+// pops both, two bands leave the first at ~0.88 (stalls). So loops use 1-wide stations and
+// interval 30 (Loop Line, Switchyard, Sky Walk, Expanse).
+function passUnder(name: string, interval: number, w: number, bands: number) {
+  const only = process.argv[2];
+  if (only && !name.startsWith(only)) return;
+  const out: string[] = [];
+  for (const seed of [7, 1, 12345]) {
+    const level: LevelDef = {
+      ...lvl(14, 8, [[5, 3, w, 2, bands > 1 ? [[R, w], [Y, w]] : [[R, w]]]], Array.from({ length: w }, (_, i) => box('1x1', i, 5, R))),
+      conveyors: [{ x: 0, y: 5, dir: 'right', length: 13, interval }],
+    };
+    const st = createGame(level, seed);
+    for (let i = 0; i < 14 * interval + 200; i++) stepGame(st);
+    out.push(st.boxes.map((b) => (b.state === 'removed' ? 'pop' : (b.region.count / 576).toFixed(2))).join('/'));
+  }
+  console.log(`## ${name}: ${out.join(' ')}`);
+}
+for (const interval of [20, 25, 30]) passUnder(`XB pass under interval=${interval} 1-wide`, interval, 1, 1);
+passUnder('XB pass under interval=30 2-wide two bands', 30, 2, 2);
+// XC. Foreign debris under a station (Sky Walk v1): a two-band station [R, Y] whose red is shared
+// with a box elsewhere keeps ~0.09 red on its floor after the red pops, and the yellow riding under
+// it then catches nothing. Give a stacked station a bottom color no other box uses (its debris
+// dissolves). Riding loops settle in the replay only when every rider has popped or queues behind
+// a frozen gate (beltBusy), and the hero rides belts: end an entry on a belt cell only where the
+// ride stops by itself (behind a jammed queue or a gate), and push a queued box off the loop with
+// a separate entry from stepping back.
