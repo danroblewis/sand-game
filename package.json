@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "replay": "vite-node scripts/replay.ts"
+    "replay": "vite-node scripts/replay.ts",
+    "par": "vite-node scripts/par.ts"
   },
   "devDependencies": {
     "typescript": "^5.6.0",
