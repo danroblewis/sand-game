@@ -110,9 +110,7 @@ describe('LEVELS', () => {
         }
         // every box is dragged at least once unless it is completed in place (frozen boxes that
         // thaw already docked) or, with box gravity, dropped into place when its support is pulled
-        // (a closet over a shaft); the physics replay proves those complete. Chapter 5 drag levels
-        // may seal a box in a pocket that a chain fills in place (Relay).
-        if (CH5.has(level.id)) return;
+        // (a closet over a shaft); the physics replay proves those complete.
         const dragged = new Set(level.solution!.map((st) => parseStep(st)!.box));
         level.boxes.forEach((b, i) => {
           if (!dragged.has(i) && !level.boxGravity) expect(b.frozen ?? 0, `box#${i} never moves`).toBeGreaterThan(0);
@@ -205,10 +203,8 @@ describe('chapter 5 (Expanse, big maps)', () => {
     expect(EARLY.length).toBe(LEVELS.length - EXPANSE.length);
   });
 
-  it('is mostly hero levels, with at least one drag level and one gravity level', () => {
-    const hero = EXPANSE.filter((l) => l.hero);
-    expect(hero.length).toBeGreaterThan(EXPANSE.length / 2);
-    expect(EXPANSE.some((l) => !l.hero), 'a drag level').toBe(true);
+  it('is all hero levels (the chapter trains players to follow the hero), at least one with gravity', () => {
+    EXPANSE.forEach((l) => expect(l.hero, `${l.id}: hero`).toBeDefined());
     expect(EXPANSE.some((l) => l.boxGravity), 'a gravity level').toBe(true);
   });
 

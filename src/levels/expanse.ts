@@ -110,26 +110,26 @@ export const EXPANSE: LevelDef[] = [
     solution: ['ULLUUU', 'DDDRRRRRUU', 'DDDRRRULLDLU', 'DLLLLLLLLLLLURRRRDRRU', 'DLLLLLLLLUDLLLU'],
   },
   //    01234567890123456789012
-  //  0 ##...#.=.......=...#...
-  //  1 .......=.......=.......
+  //  0 ##.....=.......=.......
+  //  1 .......=.......=.P.....
   //  2 .......=.......=.......
-  //  3 ....B..........y.......
-  //  4 ..RR...=.......=.......
-  //  5 .......=.......=.......
+  //  3 ..#.B..........y...#...
+  //  4 .......=.......=.......
+  //  5 ..RR...=.......=.......
   //  6 .......=.......=.......
   //  7 ========...@...========
-  //  8 .#.....=.......=.....#.
+  //  8 .......=.......=.......
   //  9 .......=.......=.......
-  // 10 .......=.......=.......
-  // 11 .......g.......t.......
+  // 10 .....#.=.......=.......
+  // 11 ..#....g.......t...#...
   // 12 .......=.......=.......
   // 13 .......=.......=.......
   // 14 .......=.......=.......
-  // Solution: Each door plug belongs to the room across the hub. Pop the red in the open room (NW):
-  // the yellow plug of NE thaws. Push it two cells in, walk round it and push it back out, take the
-  // blue from NW under its sand in NE: the green plug of SW thaws. Same dance there with the green
-  // plug, the yellow goes under its sand in SW, the teal plug of SE thaws; the green goes home in
-  // SE and the teal walks all the way back to NW.
+  // Solution: Every pop counts down every frozen door plug, wherever it is; each plug's sand sits in
+  // line with its door, so a thawed plug is pushed straight in. Pop the red in the open room (NW):
+  // the yellow plug of NE thaws. Park the blue in the hub, push the yellow in, and bring NE's
+  // purple across to its sand in NW: the green plug of SW thaws. Push it in, then the blue after
+  // it to the end of the room: the teal plug of SE thaws, and goes straight in.
   {
     id: 'four-rooms',
     name: 'Four Rooms',
@@ -138,11 +138,12 @@ export const EXPANSE: LevelDef[] = [
     camera: 'rooms',
     hero: { x: 11, y: 7 },
     sandBoxes: [
-      sb(0, 0, 2, 1, [[R, 2]]),
-      sb(5, 0, 1, 1, [[T, 1]]),
-      sb(19, 0, 1, 1, [[B, 1]]),
-      sb(1, 8, 1, 1, [[Y, 1]]),
-      sb(21, 8, 1, 1, [[G, 1]]),
+      sb(0, 0, 2, 1, [[R, 2]]), // NW
+      sb(2, 3, 1, 1, [[P, 1]]), // NW, in line with its door
+      sb(19, 3, 1, 1, [[Y, 1]]), // NE, in line with its door
+      sb(5, 10, 1, 1, [[G, 1]]), // SW, over the door line
+      sb(2, 11, 1, 1, [[B, 1]]), // SW, at the end of the door line
+      sb(19, 11, 1, 1, [[T, 1]]), // SE, in line with its door
     ],
     walls: walls(
       '.......=.......=.......',
@@ -162,14 +163,15 @@ export const EXPANSE: LevelDef[] = [
       '.......=.......=.......',
     ),
     boxes: [
-      bx('2x1', 2, 4, R), // 0
-      bx('1x1', 4, 3, B), // 1: belongs in NE
-      bx('1x1', 15, 3, Y, 1), // 2: NE door plug, belongs in SW
-      bx('1x1', 7, 11, G, 2), // 3: SW door plug, belongs in SE
-      bx('1x1', 15, 11, T, 3), // 4: SE door plug, belongs in NW
+      bx('2x1', 2, 5, R), // 0
+      bx('1x1', 4, 3, B), // 1: belongs in SW
+      bx('1x1', 15, 3, Y, 1), // 2: NE door plug
+      bx('1x1', 7, 11, G, 3), // 3: SW door plug
+      bx('1x1', 15, 11, T, 5), // 4: SE door plug
+      bx('1x1', 17, 1, P), // 5: in NE, belongs in NW
     ],
-    hint: 'Every pop counts down every frozen plug, wherever it is. Each door plug belongs to the room across the hub: push it in, walk round it, and bring it back out.',
-    solution: ['UUUULLLLLDLLLLDLLUUU', 'DRRRRRRRRR', 'URRDRRRRRURRDLLLLLULDD', 'LLLURRRRRRRRRDRUU', 'DLLLLLDDDDDDDDLLLLLLLLULLDRRRRRURDD', 'UUUUUURRRULLLLULDDDDDDRDLLLLLLLDLUU', 'DRRRRRRRRRRRRRRRURRDLLLLLDLUUUUUUUU', 'DDDDDDDDDDLLUULURRRRRRRRRRRDRUU', 'DLLLLLLLUUUUUUUULLLLLLLLDLUU'],
+    hint: 'Every pop counts down every frozen door plug, wherever it is. Some boxes belong to a room across the hub, and a door opens only once enough has popped elsewhere.',
+    solution: ['UUUULLLLLDDLLLLDLLUUUU', 'RRRDRRRRRURDDDDDDD', 'UUUUUURRRRRRRR', 'ULUURDDRDLLLLLLLLLLLLLL', 'RRRRDDDDDDDDLL', 'RRUURDRDLLLLLL', 'RRRRRRRRRRRRR'],
   },
   //    012345678901
   //  0 =====.......
@@ -418,63 +420,65 @@ export const EXPANSE: LevelDef[] = [
     hint: 'A box riding under a sand box catches its bottom band on the way. Anything with no station on its walk rides to the far platform: the walk back can return it.',
     solution: ['RULURR', 'DDDDDLUUUULURR', 'DDLLLDRDRUUULURR', 'R', 'RRDLULDDDUURRRDDDLLL', 'RRURULLULDDURRDDLL', 'RRULULDRDL', 'L', 'DLUUUULURR'],
   },
-  //    01234567890123456789
-  //  0 ###=RR==============
-  //  1 ###=RR==============
-  //  2 ###=R.==============
-  //  3 ###=R.==============
-  //  4 ###=R.=======.....R=
-  //  5 ###=R.=======.====R=
-  //  6 ###=R.=======.======
-  //  7 ###=R.=======.======
-  //  8 ..............======
-  //  9 RRRRRR==============
-  // 10 RRR...==============
-  // 11 ...RRR==============
-  // Solution: Drag level. The corridor from the reservoir to the sealed 1x2 at the far end is one
-  // container once every cell holds red; it fills only when the link under the reservoir closes
-  // it. Bars cannot turn corners, so the far legs (down and along) take the small boxes: send them
-  // to the far end first, then the bars along the first leg and across the yard, then the link.
+  //    0123456789012345
+  //  0 ###=============
+  //  1 ###=============
+  //  2 ###==========R==
+  //  3 ###=========.R==
+  //  4 ###=========.===
+  //  5 ###=========.===
+  //  6 .............===
+  //  7 ..R....====..===
+  //  8 .R..RRR=========
+  //  9 ..R....=========
+  // 10 .R..RRR=========
+  // 11 .......=========
+  // 12 RRRRRR.=========
+  // 13 ...@...=========
+  // Solution: The corridor from the reservoir (rows 0-5) to the sealed 1x2 at the far end is one
+  // container once every cell holds red; it fills only when the link under the reservoir closes it.
+  // In a one-wide corridor you can only push from behind, so it fills from the far end back, and
+  // a bar cannot turn the corner (the nook under it lets you push a small box up the last leg).
+  // Send the four small boxes up the far leg (they enter the corridor at x=3; never push a red under
+  // the reservoir early), then the two long bars along the first leg, the third bar into the mouth,
+  // and the link up under the reservoir last.
   {
     id: 'relay',
     name: 'Relay',
-    width: 20,
-    height: 12,
+    width: 16,
+    height: 14,
     camera: 'scroll',
-    sandBoxes: [sb(0, 0, 3, 8, [[R, 24]])],
+    hero: { x: 3, y: 13 },
+    sandBoxes: [sb(0, 0, 3, 6, [[R, 18]])],
     walls: walls(
-      '###=..==============',
-      '###=..==============',
-      '###=..==============',
-      '###=..==============',
-      '###=..=======......=',
-      '###=..=======.====.=',
-      '###=..=======.======',
-      '###=..=======.======',
-      '..............======',
-      '......==============',
-      '......==============',
-      '......==============',
+      '###=============',
+      '###=============',
+      '###==========.==',
+      '###=========..==',
+      '###=========.===',
+      '###=========.===',
+      '.............===',
+      '.......====..===',
+      '.......=========',
+      '.......=========',
+      '.......=========',
+      '.......=========',
+      '.......=========',
+      '.......=========',
     ),
     boxes: [
-      bx('1x2', 18, 4, R), // 0: sealed in its pocket at the far end
-      bx('3x1', 3, 11, R), // 1: the link under the reservoir
-      bx('3x1', 0, 9, R), // 2
-      bx('3x1', 3, 9, R), // 3
-      bx('3x1', 0, 10, R), // 4
-      bx('1x1', 4, 0, R), // 5
-      bx('1x1', 4, 1, R), // 6
-      bx('1x1', 4, 2, R), // 7
-      bx('1x1', 4, 3, R), // 8
-      bx('1x1', 4, 4, R), // 9
-      bx('1x1', 4, 5, R), // 10
-      bx('1x1', 4, 6, R), // 11
-      bx('1x1', 4, 7, R), // 12
-      bx('1x1', 5, 0, R), // 13
-      bx('1x1', 5, 1, R), // 14
+      bx('1x2', 13, 2, R), // 0: sealed in its pocket at the far end
+      bx('3x1', 0, 12, R), // 1: the link under the reservoir
+      bx('3x1', 4, 8, R), // 2
+      bx('3x1', 4, 10, R), // 3
+      bx('3x1', 3, 12, R), // 4
+      bx('1x1', 1, 8, R), // 5
+      bx('1x1', 1, 10, R), // 6
+      bx('1x1', 2, 9, R), // 7
+      bx('1x1', 2, 7, R), // 8
     ],
-    hint: 'The red corridor is one container that fills only when complete. Bars cannot turn corners: send the small boxes to the far end first, and link the reservoir last.',
-    solution: ['box#12 -> (17,4)', 'box#11 -> (16,4)', 'box#10 -> (15,4)', 'box#9 -> (14,4)', 'box#8 -> (13,4)', 'box#7 -> (13,5)', 'box#6 -> (13,6)', 'box#5 -> (13,7)', 'box#14 -> (13,8)', 'box#13 -> (12,8)', 'box#2 -> (9,8)', 'box#3 -> (6,8)', 'box#4 -> (3,8)', 'box#1 -> (0,8)'],
+    hint: 'The red corridor is one container that fills only when complete. You can only push from behind, and bars cannot turn corners: fill the far end first and link the reservoir last.',
+    solution: ['RRRUULLLLLLURRDRUUUUDDDLLULUUURRRRRRRRRRRDRUUU', 'DDLLLLLLLLLLLDLDRRLDDRRUUUDLLUURRRRRRRRRRDRUU', 'DLLLLLLDLLLDLLDRDRUUUDLLUURRRRRRRRRRDRU', 'LLLLLLLLLLLDRDRULURRRRRRRRR', 'LLLLLDLLLDDRRUULLURRRRR', 'LLDDDLLLDDRRUUUULLURR', 'DDDDDRDDLLUUUUUU', 'DDDDDDLLLUUUUUU'],
   },
   //    01234567890123456789012345678901
   //  0 .......================.....====
