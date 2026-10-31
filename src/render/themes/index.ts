@@ -2,8 +2,10 @@
 import type { Skin } from './skin';
 import { SlateSkin } from './slate';
 import { StationSkin } from './station';
+import { TerrariumSkin } from './terrarium';
+import { WorkshopSkin } from './workshop';
 
-const SKINS: Skin[] = [new SlateSkin(), new StationSkin()];
+const SKINS: Skin[] = [new SlateSkin(), new StationSkin(), new TerrariumSkin(), new WorkshopSkin()];
 const BY_ID = new Map(SKINS.map((s) => [s.id, s]));
 
 /** All registered skins (for the theme picker). */
