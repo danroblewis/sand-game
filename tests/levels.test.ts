@@ -5,6 +5,7 @@ import { levelCapacityByColor, levelSandByColor, validateLevel, validateLevels }
 import { parseHeroEntry, parseStep, replayLevel, settle } from '../src/levels/replay';
 import { createGame } from '../src/core';
 import { EXPANSE } from '../src/levels/expanse';
+import { DRIVERS } from '../src/levels/drivers';
 
 /** Chapter 5 "Expanse" (big maps, src/levels/expanse.ts): its own size, camera and mode rules. */
 const CH5 = new Set(EXPANSE.map((l) => l.id));
@@ -48,8 +49,10 @@ describe('LEVELS', () => {
       expect(l.hero, l.id).toBeDefined();
       expect(l.conveyors ?? [], `${l.id}: no belts in hero levels`).toEqual([]);
     });
-    // within each hero chapter: floating Sokoban first, then platform (gravity) Sokoban
-    for (const ch of [EARLY.slice(27, 41), EARLY.slice(41)]) {
+    // within each hero chapter: floating Sokoban first, then platform (gravity) Sokoban. The
+    // driven-box tail of Pusher II (DRIVERS) is a themed set that mixes both, so it is excluded.
+    const driverIds = new Set(DRIVERS.map((l) => l.id));
+    for (const ch of [EARLY.slice(27, 41), EARLY.slice(41).filter((l) => !driverIds.has(l.id))]) {
       if (!ch.length) continue;
       const g = ch.map((l) => !!l.boxGravity);
       if (!g.includes(true)) continue;
