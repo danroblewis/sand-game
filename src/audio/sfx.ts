@@ -7,7 +7,7 @@
 // - one shared noise buffer, at most MAX_VOICES concurrent one-shots,
 // - a continuous sand hiss (looping band-passed noise) whose level follows the flow rate.
 
-export type SoundName = 'pop' | 'thaw' | 'land' | 'step' | 'climb' | 'push' | 'slide' | 'undo' | 'win' | 'debris' | 'belt';
+export type SoundName = 'pop' | 'thaw' | 'land' | 'step' | 'climb' | 'push' | 'slide' | 'undo' | 'win' | 'debris' | 'belt' | 'whoosh' | 'stop' | 'armed';
 
 export interface SoundOpts {
   /** Box color index (pop pitch). */
@@ -153,6 +153,20 @@ export const SYNTHS: Record<SoundName, Synth> = {
       end = Math.max(end, tone(ctx, out, 'sine', t + i * 0.035, f, f, 0, 0.035, 0.002, 0.06));
     }
     return end;
+  },
+  // Kick: an airy band-passed noise sweep upward.
+  whoosh: (ctx, out, noise, t) => noiseBurst(ctx, out, noise, t, 'bandpass', 500, 2600, 1.4, 0.3, 0.03, 0.17),
+  // A kicked box stops against something: a dull knock (a little heavier the farther it slid).
+  stop: (ctx, out, noise, t, o) => {
+    const k = 0.4 + 0.6 * Math.min(1, (o.fell ?? 1) / 6);
+    let end = noiseBurst(ctx, out, noise, t, 'lowpass', 900, 300, 0.8, 0.35 * k, 0.002, 0.06);
+    end = Math.max(end, tone(ctx, out, 'triangle', t, 220, 110, 0.06, 0.3 * k, 0.002, 0.09));
+    return end;
+  },
+  // Kick armed (hold reached 2 s): a soft rising double blip.
+  armed: (ctx, out, _n, t) => {
+    const a = tone(ctx, out, 'sine', t, 880, 990, 0.05, 0.08, 0.004, 0.07);
+    return Math.max(a, tone(ctx, out, 'sine', t + 0.07, 1320, 1480, 0.05, 0.08, 0.004, 0.09));
   },
   // Belt step: barely audible click.
   belt: (ctx, out, _n, t) => tone(ctx, out, 'square', t, 1500, 1200, 0.008, 0.008, 0.001, 0.012),

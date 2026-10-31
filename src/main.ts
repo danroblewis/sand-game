@@ -146,6 +146,20 @@ function heroStep(dir: Dir): boolean {
   return ok;
 }
 
+/** One kick: snapshot first; one undo entry per kick (the hero stays put). */
+function heroKick(dir: Dir): boolean {
+  const kick = heroApi.kickBox;
+  if (!state || !state.hero || !kick || hud.busy || hud.pickerOpen || hud.menuOpen) return false;
+  const snap = heroApi.snapshot?.(state);
+  const ok = !!kick(state, dir);
+  if (ok && snap !== undefined) {
+    undoStack.push(snap);
+    if (undoStack.length > UNDO_CAP) undoStack.shift();
+    hud.setUndoCount(undoStack.length);
+  }
+  return ok;
+}
+
 /** Keyboard / d-pad move: cancels a tap-to-walk in progress. */
 function heroKey(dir: Dir): void {
   heroInput.cancel();
@@ -343,6 +357,13 @@ function playSound(ev: GameState['events'][number]): void {
     case 'heroPushed':
       sfx.play('push');
       break;
+    case 'heroKicked':
+      sfx.play('whoosh');
+      break;
+    case 'boxSlid':
+      sfx.play('stop', { fell: Math.min(6, 1 + ev.cells) });
+      haptics.pulse('tick');
+      break;
     case 'boxMoved': {
       // Player moves in drag levels only (falls and pushes have their own sounds).
       if (state.hero) break;
@@ -461,9 +482,21 @@ attachKeyboard({
   getState: () => state,
   view,
   isBlocked: blocked,
-  actions: { restart, next, prev, isRandom: () => mode.kind === 'random', heroMove: heroKey, undo, overview: toggleOverview, menu: () => hud.openMenu() },
+  actions: { restart, next, prev, isRandom: () => mode.kind === 'random', heroMove: heroKey, heroKeyDown: (d, kick) => heroInput.keyDown(d, kick), heroKeyUp: (d) => heroInput.keyUp(d), undo, overview: toggleOverview, menu: () => hud.openMenu() },
 });
-const heroInput: HeroInput = new HeroInput({ canvas: hud.canvas, renderer, getState: () => state, step: heroStep, isBlocked: blocked });
+const heroInput: HeroInput = new HeroInput({
+  canvas: hud.canvas,
+  renderer,
+  getState: () => state,
+  step: heroStep,
+  kick: heroKick,
+  view,
+  onArmed: () => {
+    sfx.play('armed');
+    haptics.pulse('tick');
+  },
+  isBlocked: blocked,
+});
 
 // ---------- Layout ----------
 // Side-by-side HUD for short landscape screens (phones); must match the media query in style.css.
@@ -548,6 +581,7 @@ function frame(now: number): void {
     haptics.update(dt / 1000, flowRate, now);
     releaseGoneHeldBox();
     pointerCtl.tick();
+    heroInput.tick(now);
     hud.setBigMap(renderer.cameraActive);
     fixSelection(state, view);
     renderer.render(state, view, now);
@@ -589,6 +623,7 @@ window.__game = {
   loadLevel,
   restart,
   heroStep,
+  heroKick,
   undo,
   sfx,
   haptics,

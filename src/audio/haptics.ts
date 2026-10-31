@@ -18,12 +18,13 @@ for (let w = 0; w <= 10; w++) TEXTURE.push([w, TEXTURE_PERIOD - w]);
 const POP = [35, 30, 70];
 const THAW = [20, 30, 20];
 const WIN = [40, 40, 40, 40, 120];
+const TICK = [14];
 const LAND: number[][] = [];
 for (let f = 0; f <= 6; f++) LAND.push([Math.round(10 + 30 * Math.min(1, Math.max(0, f - 1) / 5))]);
 
 const total = (p: number[]) => p.reduce((a, b) => a + b, 0);
 
-export type HapticName = 'pop' | 'thaw' | 'land' | 'win';
+export type HapticName = 'pop' | 'thaw' | 'land' | 'win' | 'tick';
 
 /**
  * Which haptics backend this browser has:
@@ -45,7 +46,7 @@ export function hapticsBackend(): HapticBackend {
 }
 
 /** iOS tick patterns: number of ticks, 60 ms apart. */
-const IOS_TICKS: Record<HapticName, number> = { pop: 2, thaw: 3, land: 1, win: 4 };
+const IOS_TICKS: Record<HapticName, number> = { pop: 2, thaw: 3, land: 1, win: 4, tick: 1 };
 const IOS_TICK_GAP = 60;
 const IOS_MIN_INTERVAL = 50;
 
@@ -191,7 +192,7 @@ export class Haptics {
       this.winTimer = window.setTimeout(() => this.pulse('win'), wait + 10);
       return;
     }
-    const p = name === 'pop' ? POP : name === 'thaw' ? THAW : name === 'win' ? WIN : LAND[Math.min(6, Math.max(0, fell | 0))];
+    const p = name === 'pop' ? POP : name === 'thaw' ? THAW : name === 'win' ? WIN : name === 'tick' ? TICK : LAND[Math.min(6, Math.max(0, fell | 0))];
     this.vibrate(p);
     this.texturing = false;
     this.holdUntil = performance.now() + total(p);
