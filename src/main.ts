@@ -351,7 +351,15 @@ function playSound(ev: GameState['events'][number]): void {
       sfx.play('land', { fell: ev.fell });
       haptics.pulse('land', ev.fell);
       break;
+    case 'heroThrown':
+      sfx.play('whoosh');
+      break;
+    case 'heroSlid':
+      sfx.play('stop', { fell: Math.min(6, 1 + ev.cells) });
+      haptics.pulse('tick');
+      break;
     case 'heroMoved':
+      if ((state.hero as { sliding?: unknown } | null)?.sliding) break; // thrown: no footsteps
       if (ev.climbed) sfx.play('climb');
       else sfx.play('step', { foot: (heroFoot = heroFoot ? 0 : 1) });
       break;

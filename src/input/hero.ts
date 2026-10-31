@@ -25,11 +25,12 @@ export const heroApi = {
   },
 };
 
-/** Kick by distance: a swipe whose length along its direction reaches this many cells (of screen
- *  distance, clamped to KICK_MIN_PX..KICK_MAX_PX) is a kick; shorter is one step. */
-export const KICK_DISTANCE_CELLS = 1.6;
-export const KICK_MIN_PX = 90;
-export const KICK_MAX_PX = 160;
+/** A swipe is a kick only when it is at least KICK_MIN_CELLS long and the finger ends inside the
+ *  viewport's edge band in the swipe direction; band = max(KICK_BAND_MIN_PX, KICK_BAND_FRAC of the
+ *  viewport along that axis). Everything else is one step. */
+export const KICK_MIN_CELLS = 2;
+export const KICK_BAND_MIN_PX = 64;
+export const KICK_BAND_FRAC = 0.1;
 /** The trail fades out over this long after release. */
 export const TRAIL_FADE_MS = 150;
 
@@ -187,13 +188,19 @@ export class HeroInput {
     c.addEventListener('pointercancel', end);
   }
 
-  /** Kick distance in CSS px: KICK_DISTANCE_CELLS of the current cell size, clamped. */
-  kickDistance(): number {
-    const cell = this.deps.renderer.cellSize / this.deps.renderer.dpr;
-    return Math.max(KICK_MIN_PX, Math.min(KICK_MAX_PX, KICK_DISTANCE_CELLS * cell));
+  /** Edge band size (CSS px) for a direction, from the visible canvas. */
+  bandSize(dir: Dir): number {
+    const r = this.deps.canvas.getBoundingClientRect();
+    const axis = dir === 'left' || dir === 'right' ? r.width : r.height;
+    return Math.max(KICK_BAND_MIN_PX, KICK_BAND_FRAC * axis);
   }
 
-  /** Update the trail in the view; tick on crossing the kick distance (either way). */
+  /** Minimum kick drag length in CSS px (KICK_MIN_CELLS of the current cell size). */
+  kickMinLength(): number {
+    return KICK_MIN_CELLS * (this.deps.renderer.cellSize / this.deps.renderer.dpr);
+  }
+
+  /** Update the trail in the view; tick when the swipe becomes / stops being a kick. */
   private paint(): void {
     const h = this.hold;
     if (!h || !h.dir) {
@@ -202,13 +209,16 @@ export class HeroInput {
     }
     const [vx, vy] = DIRS[h.dir];
     const dist = Math.max(0, (h.x - h.ox) * vx + (h.y - h.oy) * vy);
-    const kd = this.kickDistance();
-    const armed = dist >= kd;
+    const r = this.deps.canvas.getBoundingClientRect();
+    const band = this.bandSize(h.dir);
+    const inBand =
+      h.dir === 'right' ? h.x >= r.right - band : h.dir === 'left' ? h.x <= r.left + band : h.dir === 'down' ? h.y >= r.bottom - band : h.y <= r.top + band;
+    const armed = inBand && dist >= this.kickMinLength();
     if (armed !== h.armed) {
       h.armed = armed;
       this.deps.onThreshold?.(armed);
     }
-    this.deps.view.charge = { dir: h.dir, dist, kickDist: kd, armed };
+    this.deps.view.charge = { dir: h.dir, dist, band, inBand, armed };
   }
 
   /** Per frame: drop a faded trail. */

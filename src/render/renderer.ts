@@ -69,6 +69,18 @@ function forcePlanOf(state: GameState): Map<number, Dir> | null {
   }
 }
 
+/** Direction the thrown hero slides on the next slide step, or null (guarded). */
+function heroSlideOf(state: GameState): Dir | null {
+  const f = coreAny.heroSlidePlan;
+  const h = state.hero as (GameState['hero'] & { sliding?: Dir | null }) | null;
+  if (!h || !h.sliding || typeof f !== 'function') return null;
+  try {
+    return (f as (s: GameState) => Dir | null)(state);
+  } catch {
+    return null;
+  }
+}
+
 function kickInterval(): number {
   const v = coreAny.KICK_INTERVAL;
   return typeof v === 'number' && v > 0 ? v : 2;
@@ -145,9 +157,11 @@ export interface HeroCharge {
   dir: Dir;
   /** Drag length along `dir`, CSS px. */
   dist: number;
-  /** Kick distance, CSS px. */
-  kickDist: number;
-  /** dist >= kickDist: release kicks. */
+  /** Edge band size (CSS px) on the `dir` side of the viewport. */
+  band: number;
+  /** The finger is inside the edge band. */
+  inBand: boolean;
+  /** Release kicks (in the band and long enough). */
   armed: boolean;
   /** Set on release: the trail fades out from this time (performance.now ms). */
   fadeAt?: number;
@@ -834,7 +848,10 @@ export class Renderer {
     if (selBox) this.drawBox(selBox, view, now);
     if (dragBox) this.drawBox(dragBox, view, now);
     if (kickTarget) this.drawTargetPulse(kickTarget, now);
-    if (state.hero) this.drawHero(state, view, now, dt, heroWillFall(state, falls) ? fallPhase : -1, fallI);
+    if (state.hero) {
+      const hs = heroSlideOf(state);
+      this.drawHero(state, view, now, dt, !hs && heroWillFall(state, falls) ? fallPhase : -1, fallI, hs, slidePhase, kickI);
+    }
     if (state.hero && view.charge) this.drawCharge(state, view.charge, now);
 
     this.drawEffects(view, now);
@@ -1100,32 +1117,57 @@ export class Renderer {
    * speed with a little bob; falls glide with the box fall phase (fallPhase >= 0) and lock on like
    * falling boxes; landing squashes it.
    */
-  private drawHero(state: GameState, view: View, now: number, dt: number, fallPhase: number, fallI: number): void {
+  private drawHero(
+    state: GameState,
+    view: View,
+    now: number,
+    dt: number,
+    fallPhase: number,
+    fallI: number,
+    slideDir: Dir | null = null,
+    slidePhase = 0,
+    kickI = 2,
+  ): void {
     const h = state.hero!;
     const cs = this.cellSize;
     const ctx = this.ctx;
     let p = this.heroPos;
     if (!p) p = this.heroPos = { rx: h.x, ry: h.y, carry: 0 };
     const falling = fallPhase >= 0;
-    const tx = h.x;
-    const ty = h.y + (falling ? fallPhase : 0);
+    // Thrown: glide with the slide phase, like a kicked box.
+    const sv = slideDir ? DIR_VEC[slideDir] : null;
+    const tx = h.x + (sv ? sv[0] * slidePhase : 0);
+    const ty = h.y + (falling ? fallPhase : 0) + (sv ? sv[1] * slidePhase : 0);
     // Walks: ~90 ms per cell; when a fast tap-to-walk gets ahead, glide faster (never jump).
     const lag = Math.abs(tx - p.rx) + Math.abs(h.y - p.ry);
-    const speed = falling ? 1.6 * (60 / fallI) : Math.max(HERO_WALK_SPEED, p.carry, lag > 1 ? HERO_WALK_SPEED * 2 : 0);
-    if (falling) p.carry = speed;
+    const speed = sv ? 1.6 * (60 / kickI) : falling ? 1.6 * (60 / fallI) : Math.max(HERO_WALK_SPEED, p.carry, lag > 1 ? HERO_WALK_SPEED * 2 : 0);
+    if (falling || sv) p.carry = speed;
     const step = speed * dt;
     const move = (cur: number, tgt: number) => (Math.abs(tgt - cur) <= step ? tgt : cur + Math.sign(tgt - cur) * step);
     p.rx = move(p.rx, tx);
     p.ry = move(p.ry, ty);
-    if (p.rx === tx && p.ry === ty && !falling) p.carry = 0;
-    // Walk bob: hop while gliding between cells (not while falling).
+    if (p.rx === tx && p.ry === ty && !falling && !sv) p.carry = 0;
+    // Walk bob: hop while gliding between cells (not while falling or sliding).
     const remaining = Math.min(1, Math.abs(tx - p.rx) + Math.abs(h.y - p.ry));
-    const bob = falling ? 0 : -0.09 * Math.sin(Math.PI * remaining);
+    const bob = falling || sv ? 0 : -0.09 * Math.sin(Math.PI * remaining);
 
     const cx = this.originX + (p.rx + 0.5) * cs;
     const cy = this.originY + (p.ry + 0.5 + bob) * cs;
     const R = cs * 0.34;
     const sq = this.squashOf(HERO_ID, view, now);
+
+    // Thrown: motion streak behind the hero.
+    if (sv) {
+      ctx.save();
+      for (let i = 1; i <= 3; i++) {
+        ctx.globalAlpha = 0.18 / i;
+        ctx.fillStyle = '#ffd27e';
+        ctx.beginPath();
+        ctx.arc(cx - sv[0] * i * cs * 0.3, cy - sv[1] * i * cs * 0.3, R * (1 - i * 0.12), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
 
     // Ground shadow (stays on the ground line during the bob).
     ctx.save();
@@ -1137,6 +1179,14 @@ export class Renderer {
     ctx.restore();
 
     ctx.save();
+    if (sv) {
+      // sliding pose: stretched along the slide, squashed across it, leaning into it
+      ctx.translate(cx, cy);
+      ctx.rotate(Math.atan2(sv[1], sv[0]));
+      ctx.scale(1.14, 0.86);
+      ctx.rotate(-Math.atan2(sv[1], sv[0]) + (sv[0] !== 0 ? sv[0] * 0.18 : 0));
+      ctx.translate(-cx, -cy);
+    }
     const foot = cy + R;
     ctx.translate(cx, foot);
     ctx.scale(1 + (1 - sq) * 0.7, sq);
@@ -1212,6 +1262,22 @@ export class Renderer {
     const fade = c.fadeAt !== undefined ? Math.max(0, 1 - (now - c.fadeAt) / 150) : 1;
     if (fade <= 0 || c.dist <= 0) return;
     const ctx = this.ctx;
+    // the kick band along the viewport edge on the swipe side (while dragging)
+    if (c.fadeAt === undefined) {
+      const W = this.canvas.width;
+      const H = this.canvas.height;
+      const bp = c.band * this.dpr;
+      const [bx, by, bw, bh] =
+        c.dir === 'right' ? [W - bp, 0, bp, H] : c.dir === 'left' ? [0, 0, bp, H] : c.dir === 'down' ? [0, H - bp, W, bp] : [0, 0, W, bp];
+      const g =
+        c.dir === 'right' ? ctx.createLinearGradient(W, 0, W - bp, 0) : c.dir === 'left' ? ctx.createLinearGradient(0, 0, bp, 0) : c.dir === 'down' ? ctx.createLinearGradient(0, H, 0, H - bp) : ctx.createLinearGradient(0, 0, 0, bp);
+      const col = c.inBand ? '245,200,76' : '230,236,248';
+      const a = c.inBand ? 0.22 : 0.07;
+      g.addColorStop(0, `rgba(${col},${a})`);
+      g.addColorStop(1, `rgba(${col},0)`);
+      ctx.fillStyle = g;
+      ctx.fillRect(bx, by, bw, bh);
+    }
     const cs = this.cellSize;
     const dpr = this.dpr;
     const hp = this.heroPos;
@@ -1221,7 +1287,6 @@ export class Renderer {
     const x0 = cs * 0.38; // start at the hero's edge
     const len = c.dist * dpr;
     const x1 = x0 + len;
-    const kx = x0 + c.kickDist * dpr;
     const w = cs * 0.2;
     ctx.save();
     ctx.translate(cx, cy);
@@ -1241,16 +1306,6 @@ export class Renderer {
     ctx.lineTo(x0, w / 2);
     ctx.closePath();
     ctx.fill();
-    // kick-distance marker (only while dragging)
-    if (c.fadeAt === undefined) {
-      ctx.globalAlpha = c.armed ? 0.35 : 0.25;
-      ctx.strokeStyle = c.armed ? '#f5c84c' : '#e6ecf8';
-      ctx.lineWidth = Math.max(1, 1.5 * dpr);
-      ctx.beginPath();
-      ctx.moveTo(kx, -cs * 0.32);
-      ctx.lineTo(kx, cs * 0.32);
-      ctx.stroke();
-    }
     ctx.restore();
   }
 
