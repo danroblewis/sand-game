@@ -437,6 +437,11 @@ describe('validateLevel', () => {
     const bad = base();
     bad.boxes[1] = { ...bad.boxes[1], force: 'sideways' as never };
     expect(validateLevel(bad).join('\n')).toMatch(/box#1.*force sideways is not up\/down\/left\/right/);
+    // box gravity: an up-driven box may float (it never falls); a frozen one must rest
+    const lift: LevelDef = { ...base(), boxGravity: true, boxes: [{ shape: '1x1', x: 0, y: 3, color: 1, force: 'up' }, { shape: '2x1', x: 3, y: 7, color: 6 }] };
+    expect(validateLevel(lift)).toEqual([]);
+    const coldLift: LevelDef = { ...lift, boxes: [{ ...lift.boxes[0], frozen: 1 }, lift.boxes[1]] };
+    expect(validateLevel(coldLift).join('\n')).toMatch(/box#0.*does not start resting/);
   });
 
   it('rejects duplicate level ids', () => {

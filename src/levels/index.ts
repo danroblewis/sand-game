@@ -127,6 +127,7 @@ const wrow = (y: number, x0: number, x1: number): [number, number][] =>
 
 import { PUSHER2A } from './pusher2a';
 import { PUSHER2B } from './pusher2b';
+import { DRIVERS } from './drivers';
 import { EXPANSE } from './expanse';
 
 export const LEVELS: LevelDef[] = [
@@ -1266,6 +1267,7 @@ export const LEVELS: LevelDef[] = [
   },
   ...PUSHER2A,
   ...PUSHER2B,
+  ...DRIVERS,
   ...EXPANSE,
 ];
 

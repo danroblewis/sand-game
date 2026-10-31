@@ -121,6 +121,8 @@ export function validateLevel(level: LevelDef): string[] {
   // a wall, a sand box, or another box) so a level never opens with a cascade.
   if (level.boxGravity) {
     level.boxes.forEach((b, i) => {
+      // an unfrozen up-driven box never falls (it holds itself and its train up)
+      if (b.force === 'up' && !b.frozen) return;
       const label = `box#${i}(${b.shape}@${b.x},${b.y})`;
       const own = `box#${i}(`;
       const cells = boxDefCells(b);

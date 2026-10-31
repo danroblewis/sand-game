@@ -10,6 +10,7 @@
 // Driven boxes (force) push their trains in the model's settle, like gravity; they can't be pushed
 // against their force.
 import { getLevel } from '../src/levels';
+import { DRIVERS } from '../src/levels/drivers';
 import { replayLevel } from '../src/levels/replay';
 import { SHAPES } from '../src/core/shapes';
 const kicks = process.argv.includes('--kick');
@@ -17,7 +18,7 @@ const args = process.argv.slice(2).filter((a) => a !== '--kick');
 const sep = args.indexOf('::');
 const [id, ...entries] = sep < 0 ? args : args.slice(0, sep);
 const goals = sep < 0 ? [] : args.slice(sep + 1);
-const level = getLevel(id)!;
+const level = getLevel(id) ?? DRIVERS.find((l) => l.id === id)!;
 const r = replayLevel(level, entries, { seed: 7 });
 const st = r.state;
 if (r.why && !r.why.startsWith('plan finished')) { console.log('replay failed:', r.why); process.exit(1); }

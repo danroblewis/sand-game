@@ -11,7 +11,7 @@ export const CHAPTERS: readonly Chapter[] = [
   { title: 'Workshop', start: 18 },
   { title: 'Pusher', start: 27 },
   { title: 'Pusher II', start: 41 },
-  { title: 'Expanse', start: 71 },
+  { title: 'Expanse', start: 77 },
 ];
 
 /** Chapters that contain at least one of `levelCount` levels, with their [start, end) ranges. */
