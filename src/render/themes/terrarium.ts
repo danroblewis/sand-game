@@ -682,7 +682,7 @@ export class TerrariumSkin extends SlateSkin {
 
   // ------------------------------------------------------------------ frozen pots
   /** Frost-covered pot: icy glaze, frost texture, a snow cap on the top edges, a frosty label. */
-  protected override frozenBody(host: SkinHost, b: Box, path: Path2D, px: number, py: number, lw: number): void {
+  protected override frozenBody(host: SkinHost, b: Box, path: Path2D, px: number, py: number, lw: number, outline?: Vec[][]): void {
     const ctx = host.ctx;
     const cs = host.cellSize;
     const grad = ctx.createLinearGradient(px, py, px, py + b.bh * cs);
@@ -710,7 +710,7 @@ export class TerrariumSkin extends SlateSkin {
     ctx.lineWidth = lw;
     ctx.stroke(path);
     // snow cap: scallops along every top edge
-    const loops = shapeOutline(b.shape, b.cells);
+    const loops = outline ?? shapeOutline(b.shape, b.cells);
     ctx.fillStyle = '#ffffff';
     for (const loop of loops) {
       const n = loop.length;
@@ -764,6 +764,10 @@ export class TerrariumSkin extends SlateSkin {
 
   // ------------------------------------------------------------------ driven boxes
   /** Face arrow (affordance, as slate) and a coiled vine spring on the back edge. */
+  protected override pressureColor(): string | null {
+    return '#eaffc8';
+  }
+
   protected override drawForce(host: SkinHost, b: Box, px: number, py: number, now: number): void {
     const force = b.force;
     if (!force) return;
@@ -888,23 +892,6 @@ export class TerrariumSkin extends SlateSkin {
       ctx.globalAlpha = 1;
     }
     ctx.restore();
-    if (pressing) {
-      const fronts = b.cells.filter((c) => !own.has(`${c.x + fx},${c.y + fy}`));
-      ctx.save();
-      ctx.globalAlpha = 0.45 + 0.35 * pulse;
-      ctx.strokeStyle = '#eaffc8';
-      ctx.lineWidth = Math.max(1.5, cs * 0.04);
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      for (const c of fronts) {
-        const ex2 = px + (c.x + 0.5 + fx * 0.44) * cs;
-        const ey2 = py + (c.y + 0.5 + fy * 0.44) * cs;
-        ctx.moveTo(ex2 - fy * cs * 0.32, ey2 - fx * cs * 0.32);
-        ctx.lineTo(ex2 + fy * cs * 0.32, ey2 + fx * cs * 0.32);
-      }
-      ctx.stroke();
-      ctx.restore();
-    }
   }
 
   // ------------------------------------------------------------------ hero

@@ -9,7 +9,7 @@ import { SlateSkin } from './slate';
 import { boxStroke, colorHex, colorRGBA } from '../colors';
 import { stationProgression } from './progression/station';
 import type { SkinProgression } from './progression/types';
-import { DIR_ANGLE, DIR_VEC, loopsPath, roundRectPath } from '../geom';
+import { DIR_ANGLE, DIR_VEC, loopsPath, roundRectPath, shapeLabelPos } from '../geom';
 
 const DECK = '#1a1e26';
 const SEAM = 'rgba(0,0,0,0.38)';
@@ -375,26 +375,9 @@ export class StationSkin extends SlateSkin {
     ctx.lineWidth = lw;
     ctx.stroke(path);
     // counter (same rule as slate: centre of rectangles, else the cell nearest the centroid)
-    let mx = 0;
-    let my = 0;
-    for (const c of b.cells) {
-      mx += c.x + 0.5;
-      my += c.y + 0.5;
-    }
-    mx /= b.cells.length;
-    my /= b.cells.length;
-    let best = b.cells[0];
-    let bestD = Infinity;
-    for (const c of b.cells) {
-      const d = (c.x + 0.5 - mx) ** 2 + (c.y + 0.5 - my) ** 2;
-      if (d < bestD) {
-        bestD = d;
-        best = c;
-      }
-    }
-    const rect = b.cells.length === b.bw * b.bh;
-    const tx = px + (rect ? mx : best.x + 0.5) * cs;
-    const ty = py + (rect ? my : best.y + 0.5) * cs;
+    const lp = shapeLabelPos(b.shape, b.cells, b.bw, b.bh);
+    const tx = px + lp.x * cs;
+    const ty = py + lp.y * cs;
     ctx.fillStyle = '#16364a';
     ctx.font = `800 ${Math.round(Math.max(cs * 0.56, 12 * host.dpr))}px ui-rounded, "SF Pro Rounded", system-ui, sans-serif`;
     ctx.textAlign = 'center';
@@ -403,6 +386,10 @@ export class StationSkin extends SlateSkin {
   }
 
   /** Driven box: the face arrow (affordance, as slate) and a thruster bell with a flame. */
+  protected override pressureColor(): string | null {
+    return '#d8f0ff';
+  }
+
   protected override drawForce(host: SkinHost, b: Box, px: number, py: number, now: number): void {
     const force = (b as Box & { force?: Dir | null }).force;
     if (!force) return;
@@ -492,25 +479,6 @@ export class StationSkin extends SlateSkin {
     ctx.fillStyle = colorHex(b.color);
     ctx.fillRect(-cs * 0.02, -cs * 0.1, cs * 0.04, cs * 0.2);
     ctx.restore();
-    if (pressing) {
-      // pressure highlight on the front edge (affordance)
-      const pulse = 0.5 + 0.5 * Math.sin(now * 0.004);
-      const fronts = b.cells.filter((c) => !own.has(`${c.x + fx},${c.y + fy}`));
-      ctx.save();
-      ctx.globalAlpha = 0.45 + 0.35 * pulse;
-      ctx.strokeStyle = '#d8f0ff';
-      ctx.lineWidth = Math.max(1.5, cs * 0.04);
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      for (const c of fronts) {
-        const ex = px + (c.x + 0.5 + fx * 0.44) * cs;
-        const ey = py + (c.y + 0.5 + fy * 0.44) * cs;
-        ctx.moveTo(ex - fy * cs * 0.32, ey - fx * cs * 0.32);
-        ctx.lineTo(ex + fy * cs * 0.32, ey + fx * cs * 0.32);
-      }
-      ctx.stroke();
-      ctx.restore();
-    }
   }
 
   /** The hero as a small maintenance bot: boxy body, visor with eyes, antenna light, treads. */

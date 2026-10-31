@@ -2,6 +2,7 @@
 // sealed bulkheads between decks show what opens them. Fanfare is a delivery readout with lamp
 // stars; the ceremony opens a hatch.
 import { buildFanfare, ceremonyButton, ceremonyIcon, h, LOCK_SVG, STAR_SVG, type FanfareLabels } from './common';
+import { STATION_PROGRESSION_CSS } from './station-css';
 import type { CeremonyView, FanfareView, MapLevelView, MapModel, SkinProgression } from './types';
 
 const LABELS: FanfareLabels = {
@@ -31,6 +32,7 @@ function hatch(l: MapLevelView, model: MapModel): HTMLElement {
 }
 
 export const stationProgression: SkinProgression = {
+  css: STATION_PROGRESSION_CSS,
   renderMap(host, model) {
     host.innerHTML = '';
     const root = h('div', 'pm pm-station');

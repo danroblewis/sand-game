@@ -56,6 +56,8 @@ export interface Skin {
   readonly name: string;
   /** Page / HUD background (CSS color) behind the board. */
   readonly pageBg: string;
+  /** Scoped CSS the skin ships (injected once on first activation, never removed). */
+  readonly css?: string;
   /** Themed level map, win fanfare and unlock ceremonies (DOM). */
   readonly progression: SkinProgression;
 
@@ -70,6 +72,8 @@ export interface Skin {
   boxBody(h: SkinHost, b: Box, view: View, now: number): void;
   /** A same-color group drawn as one shape with seams; per-piece highlights. */
   group(h: SkinHost, members: Box[], view: View, now: number): void;
+  /** Drawn after every box (so neighbours never cover it): a driven box's pressure line etc. */
+  forceOverlay?(h: SkinHost, b: Box, view: View, now: number): void;
   /** Motion streak behind a kicked (sliding) box. */
   streak(h: SkinHost, b: Box, dir: Dir): void;
   hero(h: SkinHost, pose: HeroPose): void;

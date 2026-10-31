@@ -643,7 +643,7 @@ export class WorkshopSkin extends SlateSkin {
   }
 
   /** Ice-crusted jar: cold glass, frost, a crust with drips on top edges, counter etched in frost. */
-  protected override frozenBody(host: SkinHost, b: Box, path: Path2D, px: number, py: number, lw: number): void {
+  protected override frozenBody(host: SkinHost, b: Box, path: Path2D, px: number, py: number, lw: number, outline?: Vec[][]): void {
     const ctx = host.ctx;
     const cs = host.cellSize;
     const grad = ctx.createLinearGradient(px, py, px + b.bw * cs * 0.4, py + b.bh * cs);
@@ -656,7 +656,7 @@ export class WorkshopSkin extends SlateSkin {
       ctx.fillStyle = frost;
       ctx.fill(path);
     }
-    const loops = shapeOutline(b.shape, b.cells);
+    const loops = outline ?? shapeOutline(b.shape, b.cells);
     ctx.save();
     ctx.clip(path);
     // a faint memory of the jar's color at the bottom
@@ -848,24 +848,6 @@ export class WorkshopSkin extends SlateSkin {
     ctx.fillStyle = colorHex(b.color);
     ctx.fillRect(x1 - cs * 0.045, -cs * 0.09, cs * 0.03, cs * 0.18);
     ctx.restore();
-    if (pressing) {
-      const pulse = 0.5 + 0.5 * Math.sin(now * 0.004);
-      const fronts = b.cells.filter((c) => !own.has(`${c.x + fx},${c.y + fy}`));
-      ctx.save();
-      ctx.globalAlpha = 0.45 + 0.35 * pulse;
-      ctx.strokeStyle = '#fff3c4';
-      ctx.lineWidth = Math.max(1.5, cs * 0.04);
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      for (const c of fronts) {
-        const ex = px + (c.x + 0.5 + fx * 0.44) * cs;
-        const ey = py + (c.y + 0.5 + fy * 0.44) * cs;
-        ctx.moveTo(ex - fy * cs * 0.32, ey - fx * cs * 0.32);
-        ctx.lineTo(ex + fy * cs * 0.32, ey + fx * cs * 0.32);
-      }
-      ctx.stroke();
-      ctx.restore();
-    }
   }
 
   // ---------- hero: a clockwork tin figure with a wind-up key ----------

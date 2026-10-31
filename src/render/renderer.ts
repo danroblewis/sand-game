@@ -276,6 +276,19 @@ interface RenderPos {
 
 const LERP_TAU = 0.08; // seconds
 
+/** Inject a skin's scoped CSS (and its progression CSS) once per skin id. */
+const injectedCss = new Set<string>();
+function injectSkinCss(skin: Skin): void {
+  if (injectedCss.has(skin.id) || typeof document === 'undefined') return;
+  injectedCss.add(skin.id);
+  const css = [skin.css, skin.progression?.css].filter(Boolean).join('\n');
+  if (!css) return;
+  const el = document.createElement('style');
+  el.dataset.skin = skin.id;
+  el.textContent = css;
+  document.head.append(el);
+}
+
 export class Renderer {
   readonly canvas: HTMLCanvasElement;
   readonly ctx: CanvasRenderingContext2D;
@@ -385,6 +398,7 @@ export class Renderer {
   /** Switch skins (by id; unknown ids fall back to slate). Returns the active skin. */
   setSkin(id: string | undefined): Skin {
     const next = getSkin(id);
+    injectSkinCss(next);
     if (next !== this.skin) {
       this.skin = next;
       this.skin.bake?.(this);
@@ -790,6 +804,12 @@ export class Renderer {
     for (const g of groups) this.skin.group(this, g, view, now);
     if (selBox) this.drawBox(selBox, view, now);
     if (dragBox) this.drawBox(dragBox, view, now);
+    // Overlays that must sit above every box (driven boxes' pressure lines).
+    if (this.skin.forceOverlay) {
+      for (const b of state.boxes) {
+        if (b.state === 'active' && (b as Box & { force?: Dir | null }).force && this.onScreen(b.x - 1, b.y - 1, b.bw + 2, b.bh + 2)) this.skin.forceOverlay(this, b, view, now);
+      }
+    }
     if (state.hero) {
       const hs = heroSlideOf(state);
       this.drawHero(state, view, now, dt, !hs && heroWillFall(state, falls) ? fallPhase : -1, fallI, hs, slidePhase, kickI);

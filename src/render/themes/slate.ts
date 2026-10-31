@@ -7,7 +7,7 @@ import type { HeroPose, KickArrow, Skin, SkinHost } from './skin';
 import { BG, BOARD_BG, GRID_LINE, ICE_FILL_BOTTOM, ICE_FILL_TOP, ICE_STROKE, ICE_TEXT, boxFill, boxGlow, boxStroke, colorHex, colorRGBA } from '../colors';
 import { slateProgression } from './progression/slate';
 import type { SkinProgression } from './progression/types';
-import { DIR_ANGLE, DIR_VEC, POP_MS, loopsPath, outlineLoops, roundRectPath, shapeOutline } from '../geom';
+import { DIR_ANGLE, DIR_VEC, POP_MS, loopsPath, outlineLoops, roundRectPath, shapeLabelPos, shapeOutline } from '../geom';
 
 const BELT_SPACING = 0.5;
 
@@ -276,11 +276,15 @@ export class SlateSkin implements Skin {
     ctx.fillStyle = g;
     ctx.fillRect(x, y, w, cs * 0.5);
   }
-  /** Extra decoration on top of a box / group outline (loops in grid units, placed at px, py). */
-  protected boxDecor(_host: SkinHost, _loops: Vec[][], _px: number, _py: number, _color: ColorId): void {}
+  /**
+   * Extra decoration on top of a box / group outline (loops in grid units, placed at px, py).
+   * `boxes` are the pieces drawn (one box, or a group's members; positions relative to px, py are
+   * box.x/box.y for groups, 0,0 for a single box), so a skin can decorate each piece once.
+   */
+  protected boxDecor(_host: SkinHost, _loops: Vec[][], _px: number, _py: number, _color: ColorId, _boxes: Box[] = []): void {}
 
   /** Frozen box: ice fill + frost + the thaw counter. */
-  protected frozenBody(host: SkinHost, b: Box, path: Path2D, px: number, py: number, lw: number): void {
+  protected frozenBody(host: SkinHost, b: Box, path: Path2D, px: number, py: number, lw: number, _loops?: Vec[][]): void {
     const ctx = host.ctx;
     const cs = host.cellSize;
       const grad = ctx.createLinearGradient(px, py, px, py + b.bh * cs);
@@ -296,28 +300,10 @@ export class SlateSkin implements Skin {
       ctx.strokeStyle = ICE_STROKE;
       ctx.lineWidth = lw;
       ctx.stroke(path);
-      // Number on the cell nearest the shape centroid.
-      let mx = 0;
-      let my = 0;
-      for (const c of b.cells) {
-        mx += c.x + 0.5;
-        my += c.y + 0.5;
-      }
-      mx /= b.cells.length;
-      my /= b.cells.length;
-      let best = b.cells[0];
-      let bestD = Infinity;
-      for (const c of b.cells) {
-        const d = (c.x + 0.5 - mx) ** 2 + (c.y + 0.5 - my) ** 2;
-        if (d < bestD) {
-          bestD = d;
-          best = c;
-        }
-      }
-      // Rectangles: true centre. Other shapes: centre of the cell nearest the centroid.
-      const rect = b.cells.length === b.bw * b.bh;
-      const tx = px + (rect ? mx : best.x + 0.5) * cs;
-      const ty = py + (rect ? my : best.y + 0.5) * cs;
+      // Number at the shape's label point (rect centre, else the cell nearest the centroid).
+      const lp = shapeLabelPos(b.shape, b.cells, b.bw, b.bh);
+      const tx = px + lp.x * cs;
+      const ty = py + lp.y * cs;
       ctx.fillStyle = ICE_TEXT;
       ctx.font = `800 ${Math.round(Math.max(cs * 0.56, 12 * host.dpr))}px ui-rounded, "SF Pro Rounded", system-ui, sans-serif`;
       ctx.textAlign = 'center';
@@ -343,7 +329,7 @@ export class SlateSkin implements Skin {
     const lw = Math.max(2, cs * 0.06);
 
     if (b.frozen > 0) {
-      this.frozenBody(host, b, path, px, py, lw);
+      this.frozenBody(host, b, path, px, py, lw, loops);
     } else {
       ctx.fillStyle = this.boxFillStyle(b.color);
       ctx.fill(path);
@@ -363,7 +349,7 @@ export class SlateSkin implements Skin {
         ctx.stroke(path);
         if (hover) this.strokeHover(host, path, lw);
       }
-      this.boxDecor(host, loops, px, py, b.color);
+      this.boxDecor(host, loops, px, py, b.color, [b]);
     }
 
     this.drawThaw(host, b, path, view, now, lw);
@@ -466,24 +452,42 @@ export class SlateSkin implements Skin {
       ctx.globalAlpha = 1;
     }
     ctx.restore();
-    // pressing: thin pressure highlight along the front edge
-    if (pressing) {
-      const fronts = b.cells.filter((c) => !own.has(`${c.x + fx},${c.y + fy}`));
-      ctx.save();
-      ctx.globalAlpha = 0.45 + 0.35 * pulse;
-      ctx.strokeStyle = '#fff3c4';
-      ctx.lineWidth = Math.max(1.5, cs * 0.04);
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      for (const c of fronts) {
-        const ex = px + (c.x + 0.5 + fx * 0.44) * cs;
-        const ey = py + (c.y + 0.5 + fy * 0.44) * cs;
-        ctx.moveTo(ex - fy * cs * 0.32, ey - fx * cs * 0.32);
-        ctx.lineTo(ex + fy * cs * 0.32, ey + fx * cs * 0.32);
-      }
-      ctx.stroke();
-      ctx.restore();
+  }
+
+  /** Colour of the pressure line on a pressing driven box's front edge (null: none). */
+  protected pressureColor(): string | null {
+    return '#fff3c4';
+  }
+
+  /** Pressing driven box: a thin pulsing line along its front edge (drawn above all boxes). */
+  forceOverlay(host: SkinHost, b: Box, _view: View, now: number): void {
+    const force = (b as Box & { force?: Dir | null }).force;
+    if (!force || b.frozen > 0 || !(b as Box & { pressing?: boolean }).pressing) return;
+    const color = this.pressureColor();
+    if (!color) return;
+    const cs = host.cellSize;
+    const pos = host.positions.get(b.id);
+    const px = host.originX + (pos ? pos.rx : b.x) * cs;
+    const py = host.originY + (pos ? pos.ry : b.y) * cs;
+    const [fx, fy] = DIR_VEC[force];
+    const own = new Set(b.cells.map((c) => `${c.x},${c.y}`));
+    const pulse = 0.5 + 0.5 * Math.sin(now * 0.004);
+    const fronts = b.cells.filter((c) => !own.has(`${c.x + fx},${c.y + fy}`));
+    const ctx = host.ctx;
+    ctx.save();
+    ctx.globalAlpha = 0.45 + 0.35 * pulse;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(1.5, cs * 0.04);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (const c of fronts) {
+      const ex = px + (c.x + 0.5 + fx * 0.44) * cs;
+      const ey = py + (c.y + 0.5 + fy * 0.44) * cs;
+      ctx.moveTo(ex - fy * cs * 0.32, ey - fx * cs * 0.32);
+      ctx.lineTo(ex + fy * cs * 0.32, ey + fx * cs * 0.32);
     }
+    ctx.stroke();
+    ctx.restore();
   }
 
   protected strokeSelected(host: SkinHost, color: ColorId, path: Path2D, lw: number): void {
@@ -596,7 +600,7 @@ export class SlateSkin implements Skin {
     ctx.strokeStyle = this.boxStrokeStyle(first.color);
     ctx.lineWidth = lw;
     ctx.stroke(union);
-    this.boxDecor(host, outlineLoops(abs), bx, by, first.color);
+    this.boxDecor(host, outlineLoops(abs), bx, by, first.color, members);
 
     for (const b of members) this.drawForce(host, b, bx + b.x * cs, by + b.y * cs, now);
     // Per-piece selection / hover / thaw so the player sees which piece they act on.

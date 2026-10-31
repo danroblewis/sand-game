@@ -73,6 +73,8 @@ export interface CeremonyView {
 }
 
 export interface SkinProgression {
+  /** Scoped styles for these screens, injected once when the skin is first activated. */
+  readonly css?: string;
   /** Fill `host` with the chapter / level map. */
   renderMap(host: HTMLElement, model: MapModel): void;
   /** Fill `host` with the win screen; returns a cleanup (stops pending reveal timers). */
