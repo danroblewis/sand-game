@@ -181,6 +181,22 @@ function dissolveDebris(state: GameState): void {
   }
 }
 
+/**
+ * How many grains short a group may pop. Normally COMPLETION_SLACK. For the LAST box (or group) of
+ * its color (no other active or frozen box of that color left) the earlier boxes' shortfalls are
+ * stranded in the sand boxes and can never arrive, so it may also be short by exactly that
+ * inherited amount (sum over completed boxes of that color of capacity - count), capped at
+ * 4 x COMPLETION_SLACK in total.
+ */
+export function allowedShortfall(state: GameState, group: Box[]): number {
+  const color = group[0].color;
+  const members = new Set(group);
+  for (const b of state.boxes) if (b.state === 'active' && b.color === color && !members.has(b)) return COMPLETION_SLACK;
+  let inherited = 0;
+  for (const b of state.boxes) if (b.state === 'removed' && b.color === color) inherited += Math.max(0, b.region.capacity - b.region.count);
+  return Math.min(4 * COMPLETION_SLACK, COMPLETION_SLACK + inherited);
+}
+
 /** Within COMPLETION_SLACK grains of full (a literally full box always qualifies). */
 export function boxComplete(box: Box): boolean {
   const r = box.region;
@@ -190,7 +206,8 @@ export function boxComplete(box: Box): boolean {
 /** Remove complete boxes (full within COMPLETION_SLACK), tick frozen counters, and detect the win
  *  (all boxes removed; leftover debris in the sand boxes does not matter). Connected same-color
  *  boxes (rule 6b) are one container: a group pops, all members in one step, when its total count
- *  is within COMPLETION_SLACK of its total capacity (one slack per group). */
+ *  is within allowedShortfall (COMPLETION_SLACK, or for the last box of a color also the shortfalls
+ *  its color's earlier boxes left stranded) of its total capacity. */
 export function checkCompletions(state: GameState): void {
   let completed = false;
   for (const group of connectedGroups(state)) {
@@ -201,7 +218,7 @@ export function checkCompletions(state: GameState): void {
       count += b.region.count;
       capacity += b.region.capacity;
     }
-    if (count < capacity && count < capacity - COMPLETION_SLACK) continue;
+    if (count < capacity && count < capacity - allowedShortfall(state, group)) continue;
     for (const box of group) {
       box.state = 'removed';
       state.completedCount++;

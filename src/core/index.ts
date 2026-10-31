@@ -37,7 +37,7 @@ export {
 } from './grid';
 export { gameSpace, invalidateSpace, applyPull, chainPush } from './transfer';
 export type { GameSpace, Puller } from './transfer';
-export { createGame, stepGame, checkCompletions, boxComplete, dissolvedGrains } from './game';
+export { createGame, stepGame, checkCompletions, boxComplete, dissolvedGrains, allowedShortfall } from './game';
 export { applyConveyors, buildConveyor, conveyorAtCell, conveyorPlan, riderNextFree, firstCell, DIR_VEC } from './conveyors';
 export { applyBoxGravity, boxSupported, fallPlan } from './gravity';
 export { moveHero, heroGravity, heroSupported, heroCellFree, heroCanPush, kickBox, kick, applySliding, slidePlan, heroSlidePlan } from './hero';

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { COMPLETION_SLACK, DISSOLVE_STEPS, GRAINS_PER_UNIT, boxComplete, boxGroup, checkCompletions, connectedGroups, dissolvedGrains, tryMoveBox, createGame, stepGame, countColor } from '../src/core';
+import { COMPLETION_SLACK, DISSOLVE_STEPS, GRAINS_PER_UNIT, allowedShortfall, boxComplete, boxGroup, checkCompletions, connectedGroups, dissolvedGrains, tryMoveBox, createGame, stepGame, countColor } from '../src/core';
 import type { GameEvent } from '../src/core';
 import { level, totalGrains } from './helpers';
 
@@ -262,3 +262,71 @@ describe('connected same-color boxes complete together (rule 6b)', () => {
   });
 });
 
+
+describe('last box of a color inherits stranded shortfalls', () => {
+  const setCount = (b: { region: { cells: Uint8Array; count: number; capacity: number } }, n: number) => {
+    b.region.cells.fill(0);
+    b.region.cells.fill(1, 0, n);
+    b.region.count = n;
+  };
+  const three = () =>
+    createGame(level({
+      width: 8,
+      sandBoxes: [{ x: 7, y: 5, w: 1, h: 1, layers: [{ color: 1, amount: 100 / GRAINS_PER_UNIT }] }], // stranded red
+      boxes: [
+        { shape: '1x1', x: 0, y: 0, color: 1 },
+        { shape: '1x1', x: 2, y: 0, color: 1 },
+        { shape: '1x1', x: 4, y: 0, color: 1 },
+        { shape: '1x1', x: 6, y: 0, color: 2 },
+      ],
+    }));
+
+  it('three same-color boxes fed in sequence, each earlier one ~50 short: the third still pops', () => {
+    const s = three();
+    const [a, b, c] = s.boxes;
+    setCount(a, 576 - 50);
+    checkCompletions(s);
+    expect(a.state).toBe('removed'); // plain slack
+    setCount(b, 576 - 50);
+    checkCompletions(s);
+    expect(b.state).toBe('removed');
+    expect(allowedShortfall(s, [c])).toBe(COMPLETION_SLACK + 100);
+    setCount(c, 576 - 140); // 140 short: more than one slack, within slack + the 100 stranded
+    checkCompletions(s);
+    expect(c.state).toBe('removed');
+    expect(s.boxes[3].state).toBe('active'); // other colors unaffected
+  });
+
+  it('the inherited allowance is exact and capped at 4 x slack', () => {
+    const s = three();
+    const [a, b, c] = s.boxes;
+    setCount(a, 576 - 50);
+    setCount(b, 576 - 50);
+    checkCompletions(s);
+    setCount(c, 576 - 159); // one grain more than slack + 100
+    checkCompletions(s);
+    expect(c.state).toBe('active');
+    // huge earlier shortfalls are capped
+    a.region.count = 0;
+    b.region.count = 0;
+    expect(allowedShortfall(s, [c])).toBe(4 * COMPLETION_SLACK);
+  });
+
+  it('a non-last box 100 short does not pop; frozen boxes of the color count as remaining', () => {
+    const s = three();
+    setCount(s.boxes[0], 576 - 100);
+    checkCompletions(s);
+    expect(s.boxes[0].state).toBe('active');
+    expect(allowedShortfall(s, [s.boxes[0]])).toBe(COMPLETION_SLACK);
+    const f = createGame(level({
+      boxes: [
+        { shape: '1x1', x: 0, y: 0, color: 1 },
+        { shape: '1x1', x: 2, y: 0, color: 1 },
+        { shape: '1x1', x: 4, y: 0, color: 1, frozen: 2 },
+      ],
+    }));
+    setCount(f.boxes[0], 576 - 50);
+    checkCompletions(f);
+    expect(allowedShortfall(f, [f.boxes[1]])).toBe(COMPLETION_SLACK); // the frozen one is still to come
+  });
+});
