@@ -5,6 +5,7 @@ import type { Box, ColorId, ConveyorState, Dir, SandRegion, Vec } from '../../co
 import type { Effect, View } from '../renderer';
 import type { HeroPose, KickArrow, Skin, SkinHost } from './skin';
 import { BG, BOARD_BG, GRID_LINE, ICE_FILL_BOTTOM, ICE_FILL_TOP, ICE_STROKE, ICE_TEXT, boxFill, boxGlow, boxStroke, colorHex, colorRGBA } from '../colors';
+import { PLAIN_SAND, type SandStyle } from '../sandStyle';
 import { slateProgression } from './progression/slate';
 import type { SkinProgression } from './progression/types';
 import { DIR_ANGLE, DIR_VEC, POP_MS, loopsPath, outlineLoops, roundRectPath, shapeLabelPos, shapeOutline } from '../geom';
@@ -16,6 +17,7 @@ export class SlateSkin implements Skin {
   readonly name: string = 'Slate';
   readonly pageBg: string = BG;
   readonly progression: SkinProgression = slateProgression;
+  readonly sand: SandStyle = PLAIN_SAND;
   protected frostCache: CanvasPattern | null = null;
 
   board(host: SkinHost): void {
@@ -67,8 +69,7 @@ export class SlateSkin implements Skin {
 
     ctx.save();
     ctx.clip(glass);
-    const rc = host.regionCanvas(region);
-    ctx.drawImage(rc.canvas, 0, 0, region.w, region.h, x, y, w, h);
+    host.blitRegion(region, x, y, w, h);
     // Inner shadow along the edges.
     const sh = cs * 0.18;
     let g = ctx.createLinearGradient(0, y, 0, y + sh);
@@ -336,8 +337,7 @@ export class SlateSkin implements Skin {
       ctx.save();
       ctx.clip(path);
       const region = b.region;
-      const rc = host.regionCanvas(region);
-      ctx.drawImage(rc.canvas, 0, 0, region.w, region.h, px, py, b.bw * cs, b.bh * cs);
+      host.blitRegion(region, px, py, b.bw * cs, b.bh * cs);
       this.boxSurface(host, px, py, b.bw * cs, b.bh * cs);
       ctx.restore();
 
@@ -567,8 +567,7 @@ export class SlateSkin implements Skin {
     ctx.save();
     ctx.clip(union);
     for (const b of members) {
-      const rc = host.regionCanvas(b.region);
-      ctx.drawImage(rc.canvas, 0, 0, b.region.w, b.region.h, bx + b.x * cs, by + b.y * cs, b.bw * cs, b.bh * cs);
+      host.blitRegion(b.region, bx + b.x * cs, by + b.y * cs, b.bw * cs, b.bh * cs);
     }
     const sy = by + minY * cs;
     this.boxSurface(host, bx + minX * cs, sy, (maxX - minX) * cs, (maxY - minY) * cs);

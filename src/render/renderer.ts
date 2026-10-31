@@ -6,6 +6,8 @@ import { CONVEYOR_INTERVAL, conveyorPlan } from '../core';
 import * as Core from '../core';
 import { DIR_VEC, outlineLoops } from './geom';
 import { getSkin, type Skin } from './themes';
+import { bakeRegion, compileSand, grainScale, type SandScratch } from './sandStyle';
+import { GRAINS_PER_CELL } from '../core/types';
 
 export { outlineLoops };
 
@@ -251,7 +253,21 @@ interface RegionCanvas {
   count: number;
   /** performance.now() when each color (0..31) was last seen in the region. */
   colorSeen: Float64Array;
+  /** Pixels per grain on this canvas (styled grains bake 2-3 px per grain). */
+  k: number;
+  /** Skin sand style + scale the canvas was baked with. */
+  styleKey: string;
+  scratch: SandScratch;
+  /** A moving-grain sparkle is fading: rebuild next frame. */
+  sparkling: boolean;
+  /** performance.now() of the last content change (overlay shows on recently active regions). */
+  changedAt: number;
+  /** Frame number of the last bake (one bake per frame at most). */
+  bakedFrame: number;
 }
+
+/** How long after its last change a region still counts as active (sand overlay). */
+const SAND_OVERLAY_MS = 700;
 
 // ---------- Renderer ----------
 
@@ -302,6 +318,8 @@ export class Renderer {
   boardW = 6;
   boardH = 8;
   private regionCanvases = new WeakMap<SandRegion, RegionCanvas>();
+  /** Rendered frame counter (sand sparkle timing). */
+  private frameNo = 0;
   readonly positions = new Map<number, RenderPos>();
   private lastTime = 0;
   /** The active skin: everything visual goes through it. */
@@ -658,6 +676,7 @@ export class Renderer {
   }
 
   render(state: GameState, view: View, now: number = performance.now()): void {
+    this.frameNo++;
     if (state.width !== this.boardW || state.height !== this.boardH) {
       this.boardW = state.width;
       this.boardH = state.height;
@@ -1014,37 +1033,55 @@ export class Renderer {
   }
 
 
-  /** Refresh and return the offscreen canvas for a region (1px per grain). */
+  /** Refresh and return the offscreen canvas for a region (1px per grain, or k px for styled grains). */
   regionCanvas(region: SandRegion): RegionCanvas {
+    const style = this.skin.sand;
+    const k = grainScale(style, this.cellSize / GRAINS_PER_CELL);
+    const styleKey = `${this.skin.id}:${k}`;
     let rc = this.regionCanvases.get(region);
-    if (!rc) {
-      const canvas = document.createElement('canvas');
-      canvas.width = region.w;
-      canvas.height = region.h;
-      const ctx = canvas.getContext('2d')!;
-      const img = ctx.createImageData(region.w, region.h);
-      rc = { canvas, ctx, img, u32: new Uint32Array(img.data.buffer), version: -1, count: -1, colorSeen: new Float64Array(32) };
+    if (!rc || rc.styleKey !== styleKey) {
+      const canvas = rc?.canvas ?? document.createElement('canvas');
+      canvas.width = region.w * k;
+      canvas.height = region.h * k;
+      const ctx = rc?.ctx ?? canvas.getContext('2d')!;
+      const img = ctx.createImageData(region.w * k, region.h * k);
+      rc = {
+        canvas, ctx, img, u32: new Uint32Array(img.data.buffer), version: -1, count: -1,
+        colorSeen: rc?.colorSeen ?? new Float64Array(32), k, styleKey,
+        scratch: { prev: null, age: null, level: null, seed: (Math.random() * 0x7fffffff) | 0 },
+        sparkling: false, changedAt: 0, bakedFrame: -1,
+      };
       this.regionCanvases.set(region, rc);
     }
-    // Skip regions whose grains have not changed since the last upload.
+    // Skip regions whose grains have not changed since the last upload (unless a sparkle fades).
     const version = regionVersion(region);
-    if (version === rc.version && region.count === rc.count) return rc;
+    const unchanged = version === rc.version && region.count === rc.count;
+    if (unchanged && (!rc.sparkling || rc.bakedFrame === this.frameNo)) return rc;
+    rc.bakedFrame = this.frameNo;
+    if (!unchanged) rc.changedAt = performance.now();
     rc.version = version;
     rc.count = region.count;
     const cells = region.cells;
-    const u = rc.u32;
-    const T = GRAIN_U32;
     const n = cells.length;
     let colors = 0;
-    for (let i = 0; i < n; i++) {
-      const v = cells[i];
-      u[i] = T[v];
-      colors |= 1 << (v & 31);
-    }
+    for (let i = 0; i < n; i++) colors |= 1 << (cells[i] & 31);
+    rc.sparkling = bakeRegion(region, rc.u32, rc.k, compileSand(style), rc.scratch, this.frameNo);
     rc.ctx.putImageData(rc.img, 0, 0);
     const seenAt = performance.now();
     for (let c = 1; c < 32; c++) if (colors & (1 << c)) rc.colorSeen[c] = seenAt;
     return rc;
+  }
+
+  /** Draw a region's (styled) sand into a device-px rect; the skin's sand overlay on active regions. */
+  blitRegion(region: SandRegion, x: number, y: number, w: number, h: number): void {
+    const rc = this.regionCanvas(region);
+    const ctx = this.ctx;
+    ctx.drawImage(rc.canvas, 0, 0, region.w * rc.k, region.h * rc.k, x, y, w, h);
+    const ov = this.skin.sand.overlay;
+    if (ov && region.count > 0) {
+      const now = performance.now();
+      if (now - rc.changedAt < SAND_OVERLAY_MS) ov(ctx, { x, y, w, h }, now);
+    }
   }
 
 

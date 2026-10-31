@@ -6,7 +6,8 @@
 import type { Box, ColorId, ConveyorState, Dir, SandRegion, Vec } from '../../core/types';
 import type { HeroPose, SkinHost } from './skin';
 import { SlateSkin } from './slate';
-import { boxStroke, colorHex, colorRGBA } from '../colors';
+import { baseRgb, boxStroke, colorHex, colorRGBA } from '../colors';
+import { desaturate, mixRgb, toneRgb, type SandStyle } from '../sandStyle';
 import { stationProgression } from './progression/station';
 import type { SkinProgression } from './progression/types';
 import { DIR_ANGLE, DIR_VEC, loopsPath, roundRectPath, shapeLabelPos } from '../geom';
@@ -25,6 +26,33 @@ export class StationSkin extends SlateSkin {
   override readonly name: string = 'Station';
   override readonly pageBg: string = '#111419';
   override readonly progression: SkinProgression = stationProgression;
+  /** Regolith: slightly metallic, high-contrast grains, bevelled chunks, glints where it moves,
+   *  and a slow light sweep over flowing sand. */
+  override readonly sand: SandStyle = {
+    palette: (color, shade) => {
+      const c = mixRgb(desaturate(baseRgb(color), 0.2), [150, 162, 178], 0.08);
+      const f = shade === 7 ? 0.36 : ((shade - 3.5) / 3.5) * 0.24;
+      return toneRgb(c, f);
+    },
+    grain: 'chunky',
+    surfaceLight: 0.45,
+    movingSparkle: 0.35,
+    sparkleStrength: 0.7,
+    overlay: (ctx, r, t) => {
+      // a soft, slightly slanted band of light drifting across the hopper (only the band is filled)
+      const bw = Math.max(4, r.w * 0.22);
+      const p = r.x - bw + ((t / 2600) % 1) * (r.w + bw * 2);
+      const x0 = Math.max(r.x, p - bw);
+      const x1 = Math.min(r.x + r.w, p + bw);
+      if (x1 <= x0) return;
+      const g = ctx.createLinearGradient(p - bw, 0, p + bw, 0);
+      g.addColorStop(0, 'rgba(220,235,255,0)');
+      g.addColorStop(0.5, 'rgba(220,235,255,0.12)');
+      g.addColorStop(1, 'rgba(220,235,255,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(x0, r.y, x1 - x0, r.h);
+    },
+  };
   /** Baked deck-plate tile (one cell) and the cell size it was baked at. */
   private plate: { cs: number; pattern: CanvasPattern } | null = null;
 
@@ -121,8 +149,7 @@ export class StationSkin extends SlateSkin {
     ctx.fill(inner);
     ctx.save();
     ctx.clip(inner);
-    const rc = host.regionCanvas(region);
-    ctx.drawImage(rc.canvas, 0, 0, region.w, region.h, x, y, w, h);
+    host.blitRegion(region, x, y, w, h);
     const sh = ctx.createLinearGradient(0, y + f, 0, y + f + cs * 0.22);
     sh.addColorStop(0, 'rgba(0,0,0,0.45)');
     sh.addColorStop(1, 'rgba(0,0,0,0)');

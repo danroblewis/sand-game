@@ -4,6 +4,7 @@
 import type { Box, ColorId, ConveyorState, Dir, SandRegion, Vec } from '../../core/types';
 import type { Effect, HeroCharge, View } from '../renderer';
 import type { SkinProgression } from './progression/types';
+import type { SandStyle } from '../sandStyle';
 
 /** What a skin may read from the renderer while drawing (device-pixel space). */
 export interface SkinHost {
@@ -23,6 +24,9 @@ export interface SkinHost {
   readonly forces: Map<number, Dir> | null;
   /** Shared sand blit: the region's 1px-per-grain canvas (draw it scaled, smoothing off). */
   regionCanvas(region: SandRegion): { canvas: HTMLCanvasElement };
+  /** Draw a region's sand (styled by the skin's `sand`) into the device-px rect, plus the skin's
+   *  sand overlay while the region is active. The caller clips. */
+  blitRegion(region: SandRegion, x: number, y: number, w: number, h: number): void;
 }
 
 /** Hero pose computed by the renderer (device pixels). */
@@ -58,6 +62,8 @@ export interface Skin {
   readonly pageBg: string;
   /** Scoped CSS the skin ships (injected once on first activation, never removed). */
   readonly css?: string;
+  /** How sand grains look (palette, grain shape, surface / depth shading, sparkle, overlay). */
+  readonly sand: SandStyle;
   /** Themed level map, win fanfare and unlock ceremonies (DOM). */
   readonly progression: SkinProgression;
 

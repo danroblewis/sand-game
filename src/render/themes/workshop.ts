@@ -8,7 +8,8 @@
 import type { Box, ColorId, ConveyorState, Dir, SandRegion, Vec } from '../../core/types';
 import type { HeroPose, SkinHost } from './skin';
 import { SlateSkin } from './slate';
-import { boxStroke, colorHex, colorRGBA } from '../colors';
+import { baseRgb, boxStroke, colorHex, colorRGBA } from '../colors';
+import { toneRgb, type SandStyle } from '../sandStyle';
 import { workshopProgression } from './progression/workshop';
 import type { SkinProgression } from './progression/types';
 import { DIR_ANGLE, DIR_VEC, loopsPath, roundRectPath, shapeOutline } from '../geom';
@@ -81,6 +82,30 @@ export class WorkshopSkin extends SlateSkin {
   override readonly name: string = 'Workshop';
   override readonly pageBg: string = '#1a120d';
   override readonly progression: SkinProgression = workshopProgression;
+  /** Fine sand in glass vials: a wider warm tonal range, a lit surface with a shadow line under
+   *  it, darker deep sand, and a glossy highlight running down the vial's left wall. */
+  override readonly sand: SandStyle = {
+    palette: (color, shade) => {
+      const b = baseRgb(color);
+      const warm: [number, number, number] = [b[0] * 1.04 + 8, b[1] + 2, b[2] * 0.9];
+      return toneRgb(warm, ((shade - 3.5) / 3.5) * 0.2);
+    },
+    grain: 'square',
+    surfaceLight: 0.8,
+    surfaceShadow: 0.7,
+    depthDarken: 0.5,
+    overlay: (ctx, r, t) => {
+      const x0 = r.x + r.w * 0.05;
+      const bw = Math.max(2, r.w * 0.16);
+      const a = 0.14 + 0.04 * Math.sin(t / 420);
+      const g = ctx.createLinearGradient(x0, 0, x0 + bw, 0);
+      g.addColorStop(0, 'rgba(255,248,230,0)');
+      g.addColorStop(0.35, `rgba(255,248,230,${a.toFixed(3)})`);
+      g.addColorStop(1, 'rgba(255,248,230,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(x0, r.y, bw, r.h);
+    },
+  };
   private baked: Baked | null = null;
 
   // ---------- baking ----------
@@ -393,8 +418,7 @@ export class WorkshopSkin extends SlateSkin {
     ctx.restore();
     ctx.save();
     ctx.clip(glass);
-    const rc = host.regionCanvas(region);
-    ctx.drawImage(rc.canvas, 0, 0, region.w, region.h, x, y, w, h);
+    host.blitRegion(region, x, y, w, h);
     // inner edge darkening (thick glass) + left/right highlights
     let g = ctx.createLinearGradient(gx0, 0, gx0 + gw0, 0);
     g.addColorStop(0, 'rgba(0,0,0,0.28)');

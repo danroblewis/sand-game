@@ -10,7 +10,8 @@ import type { Box, ColorId, ConveyorState, Dir, SandRegion, Vec } from '../../co
 import type { Effect } from '../renderer';
 import type { HeroPose, SkinHost } from './skin';
 import { SlateSkin } from './slate';
-import { boxStroke, colorHex, colorRGBA } from '../colors';
+import { baseRgb, boxStroke, colorHex, colorRGBA } from '../colors';
+import { desaturate, mixRgb, toneRgb, type SandStyle } from '../sandStyle';
 import { terrariumProgression } from './progression/terrarium';
 import type { SkinProgression } from './progression/types';
 import { DIR_ANGLE, DIR_VEC, POP_MS, loopsPath, roundRectPath, shapeOutline } from '../geom';
@@ -99,6 +100,19 @@ export class TerrariumSkin extends SlateSkin {
   override readonly name: string = 'Terrarium';
   override readonly pageBg: string = '#08110c';
   override readonly progression: SkinProgression = terrariumProgression;
+  /** Soil: earthy, desaturated tints, round crumbs, moist and dark at the bottom, a few pebbles
+   *  and root bits in settled soil, and a barely-there glint where it moves. */
+  override readonly sand: SandStyle = {
+    palette: (color, shade) => {
+      const c = mixRgb(desaturate(baseRgb(color), 0.35), [91, 70, 50], 0.18);
+      return toneRgb(c, ((shade - 3.5) / 3.5) * 0.16);
+    },
+    grain: 'dot',
+    depthDarken: 0.7,
+    specks: { density: 0.014, colors: ['#8d877c', '#6f6a61', '#3a2817'] },
+    movingSparkle: 0.08,
+    sparkleStrength: 0.3,
+  };
   private baked: Baked | null = null;
 
   // ------------------------------------------------------------------ baking
@@ -438,8 +452,7 @@ export class TerrariumSkin extends SlateSkin {
     ctx.fill(glass);
     ctx.save();
     ctx.clip(glass);
-    const rc = host.regionCanvas(region);
-    ctx.drawImage(rc.canvas, 0, 0, region.w, region.h, x, y, w, h);
+    host.blitRegion(region, x, y, w, h);
     // inner shadow: the glass is thick at the rim
     const sh = cs * 0.16;
     let g = ctx.createLinearGradient(x, 0, x + sh, 0);

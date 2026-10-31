@@ -111,3 +111,8 @@ export function boxGlow(color: ColorId): string {
 export function colorRGBA(color: ColorId, a: number): string {
   return rgba(color, a);
 }
+
+/** Base [r,g,b] of a color (no shade). */
+export function baseRgb(color: ColorId): RGB {
+  return BASE_RGB[color >= 1 && color <= MAX_COLOR ? color : 12];
+}

@@ -354,8 +354,10 @@ per-ColorId box and sand colors, outline/ice/wall tones), element drawers (sand 
 body and outline, frozen overlay, wall tiles, belt strip, driver nozzle/exhaust, hero, effects) and
 optional baked sprite sheets at the current cell size. Theme selection: `LevelDef.theme` →
 chapter default (src/ui/chapters.ts `theme`) → user override in the pause menu ("Theme: Auto /
-…") → the default skin `slate` (today's look). Skins must keep the sand pixel blit and all
-gameplay affordances (frozen counters, pushDir/force arrows, selection, pings) readable, and must
+…") → the default skin `slate` (today's look). Skins style the sand through a `sand` section (palette per color/shade, grain style
+square/dot/chunky, surface light and shadow, depth darkening, moving-grain sparkle, an animated
+overlay on active regions); the simulation grid itself never changes and `slate` stays
+pixel-identical. Skins must keep all gameplay affordances (frozen counters, pushDir/force arrows, selection, pings) readable, and must
 work at phone sizes and HiDPI. Planned skins: `slate` (current), `station` (cargo station: hoppers,
 containers, thrusters, cryo pods, bulkheads, a maintenance bot), others per chapter later.
 
