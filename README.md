@@ -26,9 +26,17 @@ npm run dev      # http://localhost:5173
   box at the foot of a shaft touches the sand tray beside it, so the order you stack is the order
   the colors drain. Pull a support out and everything above it drops. Frozen boxes inside a stack
   hold it until enough other boxes pop.
-- Chapter 3, Pusher, is Sokoban: you are a little character who walks and pushes boxes (arrows or
-  WASD, tap to walk, swipe, or the on-screen pad). Under gravity you fall and can climb one cell.
-  Z undoes a move.
+- Chapters 3 and 4, Pusher and Pusher II, are Sokoban: you are a little character who walks and
+  pushes boxes (arrows or WASD, tap to walk, or swipe). A long swipe kicks a box so it slides until
+  it hits something. Under gravity you fall and can climb one cell. Z undoes a move.
+- Driven boxes carry a built-in thrust, drawn as a nozzle on the box. They move the moment they
+  can and push whatever is in front of them, so a stack pressed against a sand box advances by
+  itself as the front box pops.
+- Chapter 5, Expanse, has boards bigger than the screen. The view follows you or snaps between
+  rooms; O or the map button shows the whole board, and edge markers point to pops out of view.
+  Belt loops circulate boxes past stations, and the hero can ride them.
+- The gear in the top bar opens the pause menu: undo, restart, levels, sound, vibration, and the
+  level's hint.
 - Touching boxes of the same color count as one container: they pop together once all are full.
   Pull a full one away from its partners and it pops on its own.
 
