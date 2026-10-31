@@ -281,6 +281,69 @@ describe('generateLevel (hero)', () => {
   });
 });
 
+// ---- big maps (Expedition) ----
+const XDIFFS = [2, 5, 8];
+const XSEEDS = 2;
+const xResults = new Map<string, GenerateResult[]>();
+const xMs = new Map<string, number>();
+for (const gravity of [false, true])
+  for (const d of XDIFFS) {
+    const t0 = performance.now();
+    const out: GenerateResult[] = [];
+    for (let s = 1; s <= XSEEDS; s++) out.push(generateLevelWithStats(s, { difficulty: d, hero: true, big: true, gravity }));
+    xMs.set(`${d}${gravity ? 'g' : ''}`, performance.now() - t0);
+    xResults.set(`${d}${gravity ? 'g' : ''}`, out);
+  }
+
+describe('generateLevel (big maps)', () => {
+  it('is deterministic per (seed, difficulty, flags)', () => {
+    const a = generateLevelWithStats(1, { difficulty: 5, hero: true, big: true });
+    expect(JSON.stringify(a.level)).toBe(JSON.stringify(xResults.get('5')![0].level));
+    expect(a.solution.path).toEqual(xResults.get('5')![0].solution.path);
+    const g = generateLevelWithStats(2, { difficulty: 2, hero: true, big: true, gravity: true });
+    expect(JSON.stringify(g.level)).toBe(JSON.stringify(xResults.get('2g')![1].level));
+  });
+
+  for (const gravity of [false, true])
+    for (const d of XDIFFS)
+      it(`${gravity ? 'gravity ' : ''}difficulty ${d}: valid big maps`, () => {
+        for (const r of xResults.get(`${d}${gravity ? 'g' : ''}`)!) {
+          const l = r.level;
+          const map = describeLevel(l);
+          expect(validateLevel(l), map).toEqual([]);
+          expect(l.id).toMatch(new RegExp(`^gen-${d}x${gravity ? 'g' : ''}h-\\d+$`));
+          expect(l.name).toMatch(new RegExp(`^Random ${d}x${gravity ? 'g' : ''}h-\\d+$`));
+          expect(l.hero).toBeTruthy();
+          expect(['scroll', 'rooms']).toContain(l.camera);
+          expect(!!l.boxGravity).toBe(gravity);
+          expect(l.width * l.height).toBeGreaterThanOrEqual(16 * 12);
+          expect(map.split('\n').length).toBeGreaterThan(l.height);
+          for (const e of r.solution.path) expect(e).toMatch(/^[UDLR]+$/);
+        }
+      });
+
+  it('big map solutions are physics-verified (replay wins)', () => {
+    for (const k of ['2', '8', '5g'])
+      for (const r of xResults.get(k)!.slice(0, 1)) {
+        const sim = replayInSim(r.level, r.solution.path, { simSeed: SIM_SEED });
+        expect(sim.won, `${describeLevel(r.level)}\n${sim.reason}`).toBe(true);
+        expect(sim.steps).toBe(r.simSteps);
+      }
+  });
+
+  it('needs more pushes at higher difficulty; at least two mechanics from difficulty 5', () => {
+    for (const g of ['', 'g']) {
+      const m = XDIFFS.map((d) => mean(xResults.get(`${d}${g}`)!.map((r) => r.solution.moves)));
+      expect(m[2], g).toBeGreaterThan(m[0]);
+    }
+    for (const r of [...xResults.get('5')!, ...xResults.get('8')!]) expect(r.template!.split('+').length, r.template).toBeGreaterThanOrEqual(2);
+  });
+
+  it('generates big maps in reasonable time', () => {
+    for (const [k, ms] of xMs) expect(ms / XSEEDS, k).toBeLessThan(30000);
+  });
+});
+
 describe('helpers', () => {
   it('generateDailySeed is date based', () => {
     expect(generateDailySeed(new Date(2026, 9, 29))).toBe(20261029);

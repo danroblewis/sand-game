@@ -1,6 +1,7 @@
 // CLI: npx vite-node scripts/generate.ts <difficulty> <count> [startSeed] [flags]
 //   --gravity   box-gravity levels (shafts, trays, ledges)
 //   --hero      hero (Sokoban) levels: solutions are U/D/L/R input strings, drags = pushes
+//   --big       with --hero: big maps (Expedition; zones over a hub strip, camera scroll/rooms)
 //   --quiet     only print the summary (and failing levels)
 //   --replay    re-check: replay each accepted solution through the real simulation again
 //               (redundant: acceptance already requires a physics win; this guards determinism)
@@ -142,7 +143,7 @@ let replaysTotal = 0;
 const simSecs: number[] = [];
 for (let seed = start; seed < start + count; seed++) {
   const t0 = performance.now();
-  const res = generateLevelWithStats(seed, { difficulty, reasons, gravity: flags.has('--gravity'), hero: flags.has('--hero') });
+  const res = generateLevelWithStats(seed, { difficulty, reasons, gravity: flags.has('--gravity'), hero: flags.has('--hero'), big: flags.has('--big') });
   if (res.template) templates[res.template] = (templates[res.template] ?? 0) + 1;
   replaysTotal += res.replays;
   simSecs.push(res.simSteps / 60);
