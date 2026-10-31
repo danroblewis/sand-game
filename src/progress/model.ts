@@ -96,7 +96,7 @@ export function chapterStates(p: Progress, levels: readonly LevelDef[]): Chapter
       if (r?.completed) completed++;
     }
     const needStars = i === 0 ? 0 : Math.ceil(prevMax * CHAPTER_STAR_SHARE - 1e-9);
-    const unlocked = i === 0 || (prevOpen && prevStars >= needStars);
+    const unlocked = i === 0 || (p.unlockedChapters ?? []).includes(ch.number) || (prevOpen && prevStars >= needStars);
     out.push({ number: ch.number, title: ch.chapter.title, theme: ch.chapter.theme, start: ch.start, end: ch.end, unlocked, stars, maxStars: (ch.end - ch.start) * 3, completed, needStars, haveStars: prevStars });
     prevStars += stars;
     prevMax += (ch.end - ch.start) * 3;
@@ -120,7 +120,7 @@ export function levelLock(p: Progress, levels: readonly LevelDef[], index: numbe
     if (prev && !prev.unlocked) return { unlocked: false, requirement: `Open chapter ${prev.number} first` };
     return { unlocked: false, requirement: `Chapter ${ch.number} opens at ${ch.needStars} stars (you have ${ch.haveStars})` };
   }
-  if (index === ch.start || p.records[levels[index - 1].id]?.completed) return { unlocked: true };
+  if (index === ch.start || p.records[levels[index].id]?.completed || p.records[levels[index - 1].id]?.completed) return { unlocked: true };
   return { unlocked: false, requirement: `Solve level ${index} first` };
 }
 
@@ -129,7 +129,7 @@ export function isUnlocked(p: Progress, levels: readonly LevelDef[], index: numb
 }
 
 export function freePlayUnlocked(p: Progress, levels: readonly LevelDef[]): boolean {
-  return completedCount(p, levels) >= FREE_PLAY_AFTER;
+  return !!p.freePlayGranted || completedCount(p, levels) >= FREE_PLAY_AFTER;
 }
 
 /** Everything currently unlocked that gets a ceremony (chapters after the first, Free Play, milestones). */
@@ -231,9 +231,26 @@ export function recordWin(p: Progress, levels: readonly LevelDef[], id: string, 
   return { par, stars, prevStars: prev?.stars ?? 0, before, record: rec, newRecord, firstClear: !before, unlocks, unlockedNext };
 }
 
-/** Old profiles: every id in `completed` without a record becomes a 1-star record. */
-export function migrateCompleted(p: Progress): boolean {
+/**
+ * Old profiles: every id in `completed` without a record becomes a 1-star record; a chapter with
+ * any completed level stays open for good, and so does Free Play if it was used (any random level
+ * solved) or 6 levels were solved.
+ */
+export function migrateCompleted(p: Progress, levels: readonly LevelDef[] = []): boolean {
   let changed = false;
+  for (const ch of chapterRanges(levels.length)) {
+    let any = false;
+    for (let k = ch.start; k < ch.end; k++) if (p.completed.includes(levels[k].id)) any = true;
+    if (any && !p.unlockedChapters.includes(ch.number)) {
+      p.unlockedChapters.push(ch.number);
+      changed = true;
+    }
+  }
+  const usedRandom = p.randomRecent.length > 0 || Object.values(p.randomSolved).some((n) => n > 0);
+  if (!p.freePlayGranted && (usedRandom || p.completed.length >= FREE_PLAY_AFTER)) {
+    p.freePlayGranted = true;
+    changed = true;
+  }
   for (const id of p.completed) {
     if (!p.records[id]) {
       p.records[id] = { completed: true, stars: 1 };

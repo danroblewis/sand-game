@@ -67,7 +67,7 @@ hud.setLevels(LEVELS);
 // Progression: an older profile's completed levels become 1-star records, and whatever is already
 // open is marked seen (no ceremony flood for a returning player).
 if (hud.progress.progression < 1) {
-  migrateCompleted(hud.progress);
+  migrateCompleted(hud.progress, LEVELS);
   settleSeen(hud.progress, LEVELS);
   hud.progress.progression = 1;
   saveProgress(hud.progress);
@@ -401,6 +401,13 @@ function loadFromHash(): boolean {
     const d = Number(g[1]);
     const seed = Number(g[5]);
     if (d >= 1 && d <= 10 && seed <= 0x7fffffff) {
+      // First-time visitors see the campaign first; existing players can open shared links.
+      if (!hud.freePlayOpen && !hud.progress.completed.length) {
+        if (!currentLevel) loadLevel(initialLevel());
+        hud.openMap();
+        hud.showStatus('Shared levels open in Free Play: solve a few campaign levels first.');
+        return true;
+      }
       const big = g[2] === 'x';
       loadRandom(d, seed, g[3] === 'g', g[4] === 'h' || big, big);
       return true;

@@ -34,6 +34,10 @@ export interface Progress {
   seenUnlocks: string[];
   /** Unlock ceremonies waiting to be shown. */
   pendingUnlocks: Unlock[];
+  /** Chapters kept open permanently (1-based; granted to profiles that played them before stars). */
+  unlockedChapters: number[];
+  /** Free Play kept open permanently (an older profile that had used it or solved 6 levels). */
+  freePlayGranted: boolean;
   /** Progression data version (0 = an older profile that still needs migrating). */
   progression: number;
 }
@@ -47,7 +51,7 @@ export function gravityFor(mode: RandomMode, seed: number): boolean {
 }
 
 export function loadProgress(): Progress {
-  const p: Progress = { completed: [], last: null, difficulty: null, randomSolved: {}, randomRecent: [], randomMode: 'floating', randomHero: false, sound: true, haptics: true, theme: 'auto', randomBig: false, records: {}, seenUnlocks: [], pendingUnlocks: [], progression: 0 };
+  const p: Progress = { completed: [], last: null, difficulty: null, randomSolved: {}, randomRecent: [], randomMode: 'floating', randomHero: false, sound: true, haptics: true, theme: 'auto', randomBig: false, records: {}, seenUnlocks: [], pendingUnlocks: [], progression: 0, unlockedChapters: [], freePlayGranted: false };
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return p;
@@ -75,6 +79,8 @@ export function loadProgress(): Progress {
     }
     if (Array.isArray(o.seenUnlocks)) p.seenUnlocks = o.seenUnlocks.filter((x) => typeof x === 'string');
     if (Array.isArray(o.pendingUnlocks)) p.pendingUnlocks = o.pendingUnlocks.filter((u) => u && typeof u === 'object' && typeof (u as Unlock).kind === 'string');
+    if (Array.isArray(o.unlockedChapters)) p.unlockedChapters = o.unlockedChapters.filter((x) => typeof x === 'number');
+    if (o.freePlayGranted === true) p.freePlayGranted = true;
     if (typeof o.progression === 'number') p.progression = o.progression;
     if (Array.isArray(o.randomRecent)) p.randomRecent = o.randomRecent.filter((x) => typeof x === 'string').slice(-RECENT_MAX);
   } catch {
