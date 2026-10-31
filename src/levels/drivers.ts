@@ -91,29 +91,36 @@ export const DRIVERS: LevelDef[] = [
     hint: 'The green blocker holds the blue engine back, and it can wait there forever. The station drinks red first, from its far end: let the train in only after that.',
     solution: ['RRD', 'DDDLLLLUU', 'D'],
   },
-  //   . . . = . = . .
-  //   . . . = O = . .
+  //   . . . = O . # #
+  //   . @ . . G G . .
+  //   = = = = . # . .
+  //   . . B Y R w # #
   //   = = = = . = . .
-  //   B Y R . @ . # #
-  //   = = = = . . . .
   //   . . . = . # # .
   //   . . . . = . . .
-  // force: B at (0,3) right
-  // force: O at (4,1) down
-  // Solution: You stand in the crossing, holding both engines. Step right: the red car rolls into the
-  // crossing and stops against you, and the orange engine pushes it down to its station. Step down
-  // and the yellow, then the blue, reach the right-hand station. Stepping down first jams the red.
+  // Solution: The blue engine (B, pushing right) holds yellow and red against the frozen white, with
+  // the red parked in the crossing. The orange engine (O, pushing down) is pinned by the green bar.
+  // Push the bar out under its sand: the orange engine takes the red down to its station, those pops
+  // thaw the white, it drains, and yellow then blue reach the right-hand station. Every engine is held
+  // by a box or a frozen plug, never by you.
   {
     id: 'crossfire',
     name: 'Crossfire',
     width: 8,
     height: 7,
-    hero: { x: 4, y: 3 },
-    sandBoxes: [sb(6, 3, 2, 1, [[B, 1], [Y, 1]]), sb(5, 5, 2, 1, [[O, 1], [R, 1]])],
-    walls: wl(...wrow(2, 0, 3), ...wrow(4, 0, 3), [3, 0], [3, 1], [5, 0], [5, 1], [5, 2], [3, 5], [4, 6]),
-    boxes: [bx('1x1', 0, 3, B, 'right'), bx('1x1', 1, 3, Y), bx('1x1', 2, 3, R), bx('1x1', 4, 1, O, 'down')],
-    hint: 'Standing in the crossing you hold back both engines. A box in the crossing belongs to whichever engine pushes it next: let the red into the crossing, but not past it.',
-    solution: ['R', 'D'],
+    hero: { x: 1, y: 1 },
+    sandBoxes: [sb(6, 3, 2, 1, [[B, 1], [Y, 1]]), sb(5, 5, 2, 1, [[O, 1], [R, 1]]), sb(5, 2, 1, 1, [[W, 1]]), sb(6, 0, 2, 1, [[G, 2]])],
+    walls: wl(...wrow(2, 0, 3), ...wrow(4, 0, 3), [3, 0], [5, 4], [3, 5], [4, 6]),
+    boxes: [
+      bx('1x1', 2, 3, B, 'right'),
+      bx('1x1', 3, 3, Y),
+      bx('1x1', 4, 3, R),
+      bx('1x1', 5, 3, W, undefined, 2),
+      bx('1x1', 4, 0, O, 'down'),
+      bx('2x1', 4, 1, G),
+    ],
+    hint: 'A box in the crossing belongs to whichever engine pushes it next. The red is waiting in the crossing for the orange engine: free that engine by pushing the green bar out under its sand.',
+    solution: ['RRRR'],
   },
   //   . . . # . . . .
   //   . . . # . . . .
@@ -167,41 +174,32 @@ export const DRIVERS: LevelDef[] = [
     hint: 'Two engines pushing against each other never move. Kick one out sideways (hold the direction, or Shift): a kicked box slides until it hits something, and then its engine takes over from there.',
     solution: ['UUKU'],
   },
-  //   . # . . . . . .
-  //   . # . . . . . .
-  //   . # . . . . . .
-  //   = . = . . . . .
-  //   = . = . . . . .
-  //   = . = . . . . .
-  //   = . = . . . . .
-  //   = . # . . . . .
-  //   # . . w O K . .
-  //   . P @ = = = = =
-  //   = b = = = = = =
-  // force: B at (1,10) up
-  // force: P at (1,9) down
-  // force: K at (5,8) left
-  // Solution: Kick the purple engine left out of the shaft, under its own sand. Its pop thaws the
-  // white plug, the pink engine delivers white and orange into the shaft and parks under its sand, and
-  // that pop thaws the lift: orange, white, blue go up into the column. Pushing instead drops you
-  // into the shaft.
+  //   . . . . # . . .
+  //   . . . . # . . .
+  //   . . . . # . . .
+  //   . . . = . = . .
+  //   . . . = . = . .
+  //   . . . = . = . .
+  //   . . O = . = . .
+  //   . @ W . . = . .
+  //   . = = = . = # #
+  //   . . . . K K . .
+  //   . . . = B = = =
+  // Solution: The blue lift (B, pushing up) is pinned under the pink bar. Kick the white in through the
+  // door (it drops onto the bar), push the orange in on top, then go down and round and push the bar
+  // out from its far side under its sand: the lift takes orange, white, blue up in turn. Nothing moves
+  // until the bar goes; a wrong first push of the white is recovered with a kick.
   {
     id: 'drivers-finale',
     name: "Driver's Finale",
     width: 8,
     height: 11,
-    hero: { x: 2, y: 9 },
+    hero: { x: 1, y: 7 },
     boxGravity: true,
-    sandBoxes: [sb(1, 0, 1, 3, [[O, 1], [W, 1], [B, 1]]), sb(2, 7, 1, 1, [[K, 1]]), sb(0, 8, 1, 1, [[P, 1]])],
-    walls: wl(...wcol(0, 3, 7), [0, 10], ...wcol(2, 3, 6), [2, 10], ...wrow(9, 3, 7), ...wrow(10, 3, 7)),
-    boxes: [
-      bx('1x1', 1, 10, B, 'up', 2),
-      bx('1x1', 1, 9, P, 'down'),
-      bx('1x1', 3, 8, W, undefined, 1),
-      bx('1x1', 4, 8, O),
-      bx('1x1', 5, 8, K, 'left'),
-    ],
-    hint: 'The purple engine pins the frozen lift down. Kick it out sideways under its own sand: from then on every pop sets off the next engine.',
-    solution: ['KL'],
+    sandBoxes: [sb(4, 0, 1, 3, [[O, 1], [W, 1], [B, 1]]), sb(6, 8, 2, 1, [[K, 2]])],
+    walls: wl(...wcol(3, 3, 6), [3, 8], [3, 10], ...wcol(5, 3, 8), [5, 10], [1, 8], [2, 8], [6, 10], [7, 10]),
+    boxes: [bx('1x1', 4, 10, B, 'up'), bx('2x1', 4, 9, K), bx('1x1', 2, 7, W), bx('1x1', 2, 6, O)],
+    hint: 'The blue lift is pinned under the pink bar and waits as long as you like. Load the shaft first: kick the white in (it drops to the bottom), push the orange in on top, then push the bar out from the far side and the lift takes them up.',
+    solution: ['KR', 'RR', 'LLLRRRRR'],
   },
 ];
